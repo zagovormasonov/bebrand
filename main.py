@@ -9,11 +9,13 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from openai import OpenAI
 
-# Configuration from environment variables
+# Конфигурация из переменных окружения
 API_TOKEN = os.environ.get('API_TOKEN')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 ALERT_CHAT_ID = os.environ.get('ALERT_CHAT_ID')
@@ -21,6 +23,7 @@ EMAIL_FROM = os.environ.get('EMAIL_FROM')
 EMAIL_TO = os.environ.get('EMAIL_TO')
 YANDEX_APP_PASSWORD = os.environ.get('YANDEX_APP_PASSWORD')
 
+# Проверка обязательных переменных
 missing_vars = []
 for var_name, var_value in [('API_TOKEN', API_TOKEN), ('OPENAI_API_KEY', OPENAI_API_KEY),
                            ('ALERT_CHAT_ID', ALERT_CHAT_ID), ('EMAIL_FROM', EMAIL_FROM),
@@ -33,18 +36,17 @@ if missing_vars:
 
 ALERT_CHAT_ID = int(ALERT_CHAT_ID)  # ID должен быть числом
 
-# Logging
+# Логирование
 logging.basicConfig(level=logging.INFO)
 
-# OpenAI client
+# Клиент OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Telegram bot
+# Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# System prompt
 SYSTEM_PROMPT = (
     "Отвечай только на русском языке. "
     "Ответь как можно правдивее, используя предоставленный контекст выше. "
@@ -64,7 +66,7 @@ SYSTEM_PROMPT = (
 
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
-# SQLite setup
+# SQLite инициализация
 conn = sqlite3.connect("messages.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -106,8 +108,8 @@ def send_email_alert(subject: str, body: str, images=None):
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
 
-@dp.message(commands=['start'])
-async def cmd_start(message: types.Message):
+@dp.message(Command(commands=["start"]))
+async def cmd_start_handler(message: types.Message):
     await message.answer("Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?")
 
 @dp.message()
@@ -119,12 +121,14 @@ async def handle_message(message: types.Message):
 
     if message.photo:
         photo = message.photo[-1]
-        photo_file = await photo.download()
+        photo_file = await photo.download(destination_dir=None)
         with open(photo_file.name, 'rb') as f:
             image_data = f.read()
 
-    cursor.execute("INSERT INTO messages (user_id, username, message, image) VALUES (?, ?, ?, ?)",
-                   (user_id, username, user_text, image_data))
+    cursor.execute(
+        "INSERT INTO messages (user_id, username, message, image) VALUES (?, ?, ?, ?)",
+        (user_id, username, user_text, image_data)
+    )
     conn.commit()
 
     if user_text.lower() == "ананас":
@@ -132,8 +136,8 @@ async def handle_message(message: types.Message):
         rows = cursor.fetchall()
         history = f"История переписки с @{username} (id {user_id}):\n\n"
         images = []
-        for msg, ts, img in rows:
-            history += f"[{ts}] {msg or '[изображение]'}\n"
+        for msg_text, ts, img in rows:
+            history += f"[{ts}] {msg_text or '[изображение]'}\n"
             if img:
                 images.append(img)
 
@@ -174,7 +178,10 @@ async def handle_message(message: types.Message):
     await message.answer(reply)
 
 async def main():
-    await dp.start_polling(bot, skip_updates=True)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
