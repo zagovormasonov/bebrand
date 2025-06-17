@@ -9,9 +9,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from aiogram import executor
 from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.fsm.storage.memory import MemoryStorage
 from openai import OpenAI
 
 # Configuration from environment variables
@@ -22,7 +21,6 @@ EMAIL_FROM = os.environ.get('EMAIL_FROM')
 EMAIL_TO = os.environ.get('EMAIL_TO')
 YANDEX_APP_PASSWORD = os.environ.get('YANDEX_APP_PASSWORD')
 
-# Проверки обязательных переменных
 missing_vars = []
 for var_name, var_value in [('API_TOKEN', API_TOKEN), ('OPENAI_API_KEY', OPENAI_API_KEY),
                            ('ALERT_CHAT_ID', ALERT_CHAT_ID), ('EMAIL_FROM', EMAIL_FROM),
@@ -44,9 +42,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # Telegram bot
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(storage=storage)
 
-# System prompt (оставляем как есть)
+# System prompt
 SYSTEM_PROMPT = (
     "Отвечай только на русском языке. "
     "Ответь как можно правдивее, используя предоставленный контекст выше. "
@@ -66,7 +64,7 @@ SYSTEM_PROMPT = (
 
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
-# SQLite и остальной код без изменений
+# SQLite setup
 conn = sqlite3.connect("messages.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -108,11 +106,11 @@ def send_email_alert(subject: str, body: str, images=None):
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
 
-@dp.message_handler(commands=['start'])
+@dp.message(commands=['start'])
 async def cmd_start(message: types.Message):
-    await message.reply("Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?")
+    await message.answer("Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?")
 
-@dp.message_handler(content_types=types.ContentTypes.ANY)
+@dp.message()
 async def handle_message(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or str(user_id)
@@ -121,7 +119,7 @@ async def handle_message(message: types.Message):
 
     if message.photo:
         photo = message.photo[-1]
-        photo_file = await photo.download(destination_dir=None)
+        photo_file = await photo.download()
         with open(photo_file.name, 'rb') as f:
             image_data = f.read()
 
@@ -140,7 +138,7 @@ async def handle_message(message: types.Message):
                 images.append(img)
 
         send_email_alert(f"Переписка с @{username}", history, images=images)
-        await message.reply("Вся переписка с изображениями отправлена менеджеру по почте.")
+        await message.answer("Вся переписка с изображениями отправлена менеджеру по почте.")
         return
 
     match = PHONE_REGEX.search(user_text)
@@ -173,7 +171,10 @@ async def handle_message(message: types.Message):
     delay = random.uniform(5.0, 5.0)
     logging.info(f"Delaying response by {delay:.2f} seconds")
     await asyncio.sleep(delay)
-    await message.reply(reply)
+    await message.answer(reply)
+
+async def main():
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
