@@ -165,7 +165,7 @@ async def handle_message(message: types.Message):
             model="gpt-3.5-turbo",
             messages=conversation,
             max_tokens=500,
-            temperature=0.7
+            temperature=0.9
         )
         reply = response.choices[0].message.content
     except Exception as e:
