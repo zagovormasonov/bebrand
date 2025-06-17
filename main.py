@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import sqlite3
@@ -13,13 +14,26 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from openai import OpenAI
 
-# Configuration
-API_TOKEN = '7550221282:AAEwqP6QYUkv49pXqRvY8ZNC4hYfjVT3sbw'
-OPENAI_API_KEY = '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'
-ALERT_CHAT_ID = 155478977  # замените на ID менеджера
-EMAIL_FROM = 'alexnov95@yandex.ru'
-EMAIL_TO = 'bazhienov75@mail.ru'
-YANDEX_APP_PASSWORD = 'wirszuhnexgdqfcp'
+# Configuration from environment variables
+API_TOKEN = os.environ.get('API_TOKEN')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+ALERT_CHAT_ID = os.environ.get('ALERT_CHAT_ID')
+EMAIL_FROM = os.environ.get('EMAIL_FROM')
+EMAIL_TO = os.environ.get('EMAIL_TO')
+YANDEX_APP_PASSWORD = os.environ.get('YANDEX_APP_PASSWORD')
+
+# Проверки обязательных переменных
+missing_vars = []
+for var_name, var_value in [('API_TOKEN', API_TOKEN), ('OPENAI_API_KEY', OPENAI_API_KEY),
+                           ('ALERT_CHAT_ID', ALERT_CHAT_ID), ('EMAIL_FROM', EMAIL_FROM),
+                           ('EMAIL_TO', EMAIL_TO), ('YANDEX_APP_PASSWORD', YANDEX_APP_PASSWORD)]:
+    if not var_value:
+        missing_vars.append(var_name)
+
+if missing_vars:
+    raise RuntimeError(f"Missing environment variables: {', '.join(missing_vars)}")
+
+ALERT_CHAT_ID = int(ALERT_CHAT_ID)  # ID должен быть числом
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +46,7 @@ bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# System prompt
+# System prompt (оставляем как есть)
 SYSTEM_PROMPT = (
     "Отвечай только на русском языке. "
     "Ответь как можно правдивее, используя предоставленный контекст выше. "
@@ -50,10 +64,9 @@ SYSTEM_PROMPT = (
     "Следующий ответ на сообщение пользователя должен начинаться с \"Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске, а вас как зовут?\""
 )
 
-# Regex для номера
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
-# SQLite
+# SQLite и остальной код без изменений
 conn = sqlite3.connect("messages.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -71,7 +84,6 @@ except sqlite3.OperationalError:
     pass
 conn.commit()
 
-# Email sending
 def send_email_alert(subject: str, body: str, images=None):
     msg = MIMEMultipart()
     msg['Subject'] = subject
@@ -96,12 +108,10 @@ def send_email_alert(subject: str, body: str, images=None):
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
 
-# /start
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     await message.reply("Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?")
 
-# Обработка сообщений и фото
 @dp.message_handler(content_types=types.ContentTypes.ANY)
 async def handle_message(message: types.Message):
     user_id = message.from_user.id
@@ -109,19 +119,16 @@ async def handle_message(message: types.Message):
     user_text = message.text.strip() if message.text else ""
     image_data = None
 
-    # Скачиваем фото, если есть
     if message.photo:
         photo = message.photo[-1]
         photo_file = await photo.download(destination_dir=None)
         with open(photo_file.name, 'rb') as f:
             image_data = f.read()
 
-    # Сохраняем в БД
     cursor.execute("INSERT INTO messages (user_id, username, message, image) VALUES (?, ?, ?, ?)",
                    (user_id, username, user_text, image_data))
     conn.commit()
 
-    # Проверка на "ананас"
     if user_text.lower() == "ананас":
         cursor.execute("SELECT message, timestamp, image FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,))
         rows = cursor.fetchall()
@@ -136,7 +143,6 @@ async def handle_message(message: types.Message):
         await message.reply("Вся переписка с изображениями отправлена менеджеру по почте.")
         return
 
-    # Проверка номера телефона
     match = PHONE_REGEX.search(user_text)
     if match:
         phone = match.group(1)
@@ -147,7 +153,6 @@ async def handle_message(message: types.Message):
             logging.error(f"Failed to send alert to {ALERT_CHAT_ID}: {e}")
         send_email_alert('Новый номер клиента', alert_text)
 
-    # GPT-ответ
     conversation = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "assistant", "content": "Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске, а вас как зовут?"},
