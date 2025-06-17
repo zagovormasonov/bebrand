@@ -101,7 +101,7 @@ def send_email_alert(subject: str, body: str, images=None):
             msg.attach(part)
 
     try:
-        with smtplib.SMTP_SSL('smtp.yandex.ru', 465) as server:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_FROM, YANDEX_APP_PASSWORD)
             server.send_message(msg)
         logging.info("Email sent successfully.")
