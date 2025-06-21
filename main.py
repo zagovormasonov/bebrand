@@ -63,7 +63,7 @@ SYSTEM_PROMPT = (
     "Тебе нужно подсветить всевозможные подводные камни и риски — то есть, причины получить как можно скорее бесплатную проверку названия и логотипа клиента как потенциального товарного знака. "
     "Не надо писать сразу большие сообщения. "
     "Задавай вопросы, чтобы беседа шла по сценарию, ведущему клиента к пониманию его болей и проблемы. "
-    "Не надо писать \"Спасибо, что поделились, что у вас уже есть название и логотип\", и подобные благодарности за ничего не стоящие человеку действия, это бред."
+    "Не надо писать \"Спасибо, что поделились, что у вас уже есть название и логотип\", и подобные благодарности за ничего не стоящие человеку действия, это бред. "
     "В первых нескольких сообщениях важно задать уточняющие вопросы. "
     "Очень важно получить ответы на следующие вопросы: "
     "[-на каких площадках? вывеска будет у вас? на сайте? в соц сетях? маркетплейсы? реклама, радио, видео? будете продавать, производить продукцию или оказывать услуги?]. "
@@ -71,46 +71,13 @@ SYSTEM_PROMPT = (
     "[напишите свой номер телефона, и бот подключит к диалогу менеджера по проверке названия]"
     " (в этой фразе нужно говорить от лица менеджера про бота, который подключит). "
     "Делай вид, что ты человек. Не представляйся ботом и не упоминай слово \"бот\". "
-    "Первым сообщением должно быть: ""Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?"". "
+    "Первым сообщением должно быть: ""Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?"
     "Следующий ответ на сообщение пользователя должен начинаться с "
     "Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске, а вас как зовут?"
 )
 
-# Обработка /start
-@dp.message(Command(commands=["start"]))
-async def cmd_start_handler(message: types.Message, state: FSMContext):
-    # Инициализируем историю диалога
-    history = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "assistant", "content": (
-            "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
-            "есть ли у вас уже название или логотип для вашего бизнеса?"
-        )}
-    ]
-    await state.update_data(chat_history=history)
-    await message.answer(history[-1]['content'])
-
-# Универсальный хендлер
-@dp.message()
-async def handle_message(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    username = message.from_user.username or str(user_id)
-    user_text = message.text.strip() if message.text else ""
-
-    # Получаем текущую историю из FSM
-    data = await state.get_data()
-    history = data.get('chat_history', [])
-    if not history:
-        # Если вдруг нет — инициализируем по умолчанию
-        history = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "assistant", "content": (
-                "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
-                "есть ли у вас уже название или логотип для вашего бизнеса?"
-            )}
-        ]
-
-    # Логируем в SQLite
+# Инициализация SQLite
+def init_db():
     conn = sqlite3.connect("messages.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("""
@@ -124,31 +91,95 @@ async def handle_message(message: types.Message, state: FSMContext):
         )
     """
     )
+    # Для совместимости: пытаемся добавить столбцы, если их нет
+    try:
+        cursor.execute("ALTER TABLE messages ADD COLUMN image BLOB")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE messages ADD COLUMN role TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
+    return conn
 
-    # Сохраняем входящее сообщение в историю и БД
+conn = init_db()
+
+# Функция отправки почты
+...  # (осталась без изменений)
+
+def send_email_alert(subject: str, body: str, images=None):
+    msg = MIMEMultipart()
+    msg['Subject'] = subject
+    msg['From'] = EMAIL_FROM
+    msg['To'] = EMAIL_TO
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    if images:
+        for i, image_data in enumerate(images):
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(image_data)
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', f'attachment; filename="image_{i+1}.jpg"')
+            msg.attach(part)
+
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(EMAIL_FROM, YANDEX_APP_PASSWORD)
+            server.send_message(msg)
+        logging.info("Email sent successfully.")
+    except Exception as e:
+        logging.error(f"Failed to send email: {e}")
+
+@dp.message(Command(commands=["start"]))
+async def cmd_start_handler(message: types.Message, state: FSMContext):
+    history = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "assistant", "content": (
+            "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
+            "есть ли у вас уже название или логотип для вашего бизнеса?"
+        )}
+    ]
+    await state.update_data(chat_history=history)
+    await message.answer(history[-1]['content'])
+
+@dp.message()
+async def handle_message(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    username = message.from_user.username or str(user_id)
+    user_text = message.text.strip() if message.text else ""
+
+    # Получение и обновление истории из FSM
+    data = await state.get_data()
+    history = data.get('chat_history') or [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "assistant", "content": (
+            "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
+            "есть ли у вас уже название или логотип для вашего бизнеса?"
+        )}
+    ]
     history.append({"role": "user", "content": user_text})
+
+    # Сохранение входящего в БД
+    cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO messages (user_id, username, role, message) VALUES (?, ?, ?, ?)",
         (user_id, username, 'user', user_text)
     )
     conn.commit()
 
-    # Проверка ключевых слов для отправки переписки менеджеру
+    # Триггеры: ананас и телефон
     if user_text.lower() == "ананас":
-        cursor.execute(
-            "SELECT role, message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,)
-        )
+        cursor.execute("SELECT role, message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,))
         rows = cursor.fetchall()
         history_text = f"Переписка с @{username} (id {user_id}):\n\n"
         for role, msg, ts in rows:
             history_text += f"[{ts}] ({role}) {msg}\n"
-        # Отправка по почте
         send_email_alert(f"Переписка с @{username}", history_text)
         await message.answer("Вся переписка отправлена менеджеру по почте.")
         return
 
-    # Проверка телефона
     match = PHONE_REGEX.search(user_text)
     if match:
         phone = match.group(1)
@@ -156,7 +187,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         await bot.send_message(ALERT_CHAT_ID, alert_text)
         send_email_alert('Новый номер клиента', alert_text)
 
-    # Запрос к OpenAI с полной историей
+    # Вызов OpenAI
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -169,19 +200,15 @@ async def handle_message(message: types.Message, state: FSMContext):
         logging.error(f"OpenAI API error: {e}")
         reply = "Извините, произошла ошибка. Попробуйте позже."
 
-    # Сохраняем ответ в историю и БД
+    # Сохранение ответа в истории и БД
     history.append({"role": "assistant", "content": reply})
     cursor.execute(
         "INSERT INTO messages (user_id, username, role, message) VALUES (?, ?, ?, ?)",
         (user_id, username, 'assistant', reply)
     )
     conn.commit()
-    conn.close()
-
-    # Сохраняем обновлённую историю в FSM
     await state.update_data(chat_history=history)
 
-    # Ответ пользователю
     delay = random.uniform(5.0, 5.0)
     await asyncio.sleep(delay)
     await message.answer(reply)
