@@ -23,6 +23,7 @@ ALERT_CHAT_ID = os.environ.get('ALERT_CHAT_ID')
 EMAIL_FROM = os.environ.get('EMAIL_FROM')
 EMAIL_TO = os.environ.get('EMAIL_TO')
 YANDEX_APP_PASSWORD = os.environ.get('YANDEX_APP_PASSWORD')
+RENDER_DATA_DIR = os.environ.get('RENDER_DATA_DIR', '/tmp')
 
 # Проверка обязательных переменных
 missing_vars = []
@@ -42,7 +43,7 @@ if missing_vars:
 
 ALERT_CHAT_ID = int(ALERT_CHAT_ID)
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
 # Инициализация клиентов
@@ -99,34 +100,41 @@ SYSTEM_PROMPT = '''
 Бот: «Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске. Стоимость зависит от первичной экспертизы, которая покажет возможность использования обозначения. И от понимания, нарушает кто-то ваши права, или может вы уже нарушаете? Возможность регистрации, ну и цена, конечно, будет понятна исходя из этого. Проведем экспертизу? Это бесплатно. Как могу к вам обращаться?»
 '''
 
+# Путь к файлу базы
+DB_PATH = os.path.join(RENDER_DATA_DIR, "messages.db")
 
-# Инициализация SQLite
-def init_db():
-    conn = sqlite3.connect("messages.db", check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("""
+def init_db(path=DB_PATH):
+    # Если файл существует, проверим его целостность
+    if os.path.exists(path):
+        try:
+            conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("PRAGMA integrity_check;")
+            result = cur.fetchone()
+            conn.close()
+            if result and result[0] != 'ok':
+                os.remove(path)
+                logging.warning("Corrupted DB detected and removed.")
+        except sqlite3.DatabaseError:
+            os.remove(path)
+            logging.warning("DB removal on exception.")
+    # Создаём новую БД или подключаемся к существующей
+    conn = sqlite3.connect(path, check_same_thread=False)
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS messages (
-            user_id INTEGER,
-            username TEXT,
-            role TEXT,
-            message TEXT,
-            image BLOB,
+            user_id   INTEGER,
+            username  TEXT,
+            role      TEXT,
+            message   TEXT,
+            image     BLOB,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    """
-    )
-    try:
-        cursor.execute("ALTER TABLE messages ADD COLUMN image BLOB")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE messages ADD COLUMN role TEXT")
-    except sqlite3.OperationalError:
-        pass
+    """)
     conn.commit()
     return conn
 
-conn = init_db()
+# Инициализация БД\conn = init_db()
 
 # Функция отправки почты
 def send_email_alert(subject: str, body: str, images=None):
@@ -178,6 +186,7 @@ async def handle_message(message: types.Message, state: FSMContext):
     ]
     history.append({"role": "user", "content": user_text})
 
+    conn = init_db()  # убеждаемся, что БД в порядке
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO messages (user_id, username, role, message) VALUES (?, ?, ?, ?)",
@@ -185,6 +194,7 @@ async def handle_message(message: types.Message, state: FSMContext):
     )
     conn.commit()
 
+    # Особая команда для отправки всей переписки
     if user_text.lower() == "ананас":
         cursor.execute("SELECT role, message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,))
         rows = cursor.fetchall()
@@ -195,6 +205,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         await message.answer("Вся переписка отправлена менеджеру по почте.")
         return
 
+    # Поиск телефона в сообщении
     match = PHONE_REGEX.search(user_text)
     if match:
         phone = match.group(1)
@@ -202,6 +213,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         await bot.send_message(ALERT_CHAT_ID, alert_text)
         send_email_alert('Новый номер клиента', alert_text)
 
+    # Вызов OpenAI
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -222,8 +234,8 @@ async def handle_message(message: types.Message, state: FSMContext):
     conn.commit()
     await state.update_data(chat_history=history)
 
-    delay = random.uniform(5.0, 5.0)
-    await asyncio.sleep(delay)
+    # Задержка перед ответом для правдоподобности
+    await asyncio.sleep(random.uniform(5.0, 5.0))
     await message.answer(reply)
 
 async def main():
