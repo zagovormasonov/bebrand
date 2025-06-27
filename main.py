@@ -2,18 +2,15 @@
 """Telegram-бот для первичного общения с клиентами BeBrand.
 
 Исправлено:
-1. **Ключ сервис-аккаунта** больше не хранится в коде. Ожидается в переменной окружения
-   `GOOGLE_SA_JSON` (прямой JSON) либо Base64-кодированный JSON в `GOOGLE_SA_JSON_B64`.
-2. SMTP-хост теперь берётся из переменной `SMTP_HOST` (по-умолчанию smtp.gmail.com).
+1. Убрана интеграция с Google Sheets.
+2. SMTP-хост берётся из переменной `SMTP_HOST` (по-умолчанию smtp.gmail.com).
 3. Добавлены аннотации типов и реорганизация кода.
-4. Работа с Google Sheets вынесена в функцию `init_google_sheet()`.
-5. Для локальной БД предусмотрён путь из `RENDER_DATA_DIR` (volume на Render.com).
+4. Для локальной БД предусмотрён путь из `RENDER_DATA_DIR` (volume на Render.com).
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -25,21 +22,13 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any, List, Mapping, MutableMapping, Sequence
+from typing import Any, Sequence, Mapping, MutableMapping
 
 import openai
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-
-# Опциональные зависимости для Google Sheets
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-except ImportError:
-    gspread = None  # type: ignore
-    Credentials = None  # type: ignore
 
 # ---------------------------------------------------------------------------
 # Конфигурация из переменных окружения
@@ -51,12 +40,9 @@ EMAIL_FROM: str | None = os.getenv("EMAIL_FROM")
 EMAIL_TO: str | None = os.getenv("EMAIL_TO")
 SMTP_PASSWORD: str | None = os.getenv("SMTP_PASSWORD", os.getenv("YANDEX_APP_PASSWORD"))
 SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
-GOOGLE_SHEET_NAME: str | None = os.getenv("GOOGLE_SHEET_NAME")
-GOOGLE_SA_JSON: str | None = os.getenv("GOOGLE_SA_JSON")
-GOOGLE_SA_JSON_B64: str | None = os.getenv("GOOGLE_SA_JSON_B64")
 RENDER_DATA_DIR: str = os.getenv("RENDER_DATA_DIR", "/tmp")
 
-_required: Sequence[tuple[str, str | None]] = [
+_required: list[tuple[str, str | None]] = [
     ("API_TOKEN", API_TOKEN),
     ("OPENAI_API_KEY", OPENAI_API_KEY),
     ("ALERT_CHAT_ID", ALERT_CHAT_ID_RAW),
@@ -85,37 +71,6 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # ---------------------------------------------------------------------------
-# Google Sheets
-# ---------------------------------------------------------------------------
-def init_google_sheet() -> "gspread.models.Worksheet | None":
-    """Инициализирует и возвращает Worksheet или None, если не настроено."""
-    if not (GOOGLE_SHEET_NAME and gspread and Credentials and (GOOGLE_SA_JSON or GOOGLE_SA_JSON_B64)):
-        logger.warning("Google Sheets is not configured or requirements missing.")
-        return None
-    try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds_info = None
-        if GOOGLE_SA_JSON_B64:
-            try:
-                decoded = base64.b64decode(GOOGLE_SA_JSON_B64)
-                creds_info = json.loads(decoded)
-            except Exception:
-                pass
-        if creds_info is None and GOOGLE_SA_JSON:
-            creds_info = json.loads(GOOGLE_SA_JSON)
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        gc = gspread.authorize(creds)
-        return gc.open(GOOGLE_SHEET_NAME).sheet1  # type: ignore
-    except Exception as exc:
-        logger.error("Google Sheets init failed: %s", exc)
-        return None
-
-gsheet = init_google_sheet()
-
-# ---------------------------------------------------------------------------
 # Регулярка для телефона
 # ---------------------------------------------------------------------------
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
@@ -125,7 +80,52 @@ PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """
 Отвечай только на русском языке.
-... (текст опущен для краткости) ...
+Отвечай только на русском языке. 
+
+Ответь как можно правдивее, используя предоставленный контекст выше.
+
+Тебе нужно не только ответить на вопросы, но продать клиенту бесплатную проверку его товарного знака. 
+
+Для этого можно задавать вопросы по регистрации. 
+
+Тебе нужно подсветить всевозможные подводные камни и риски - то есть, причины получить как можно скорее бесплатную проверку названия и логотипа клиента как потенциального товарного знака. Не надо писать сразу большие сообщения. 
+
+Задавай вопросы, чтобы беседа шла по сценарию, ведущему клиента к пониманию его болей и проблемы. 
+
+Не надо писать "Спасибо, что поделились, что у вас уже есть название и логотип", и подобные благодарности за ничего не стоящие человеку действия, это бред. Не надо повторять за человеком то, что он только что написал
+
+В первых нескольких сообщениях важно задать уточняющие вопросы. 
+
+Очень важно получить ответы на следующие вопросы: [-на каких площадках? вывеска будет у вас? на сайте? в соц сетях?маркетплейсы? реклама, радио, видео? будете продавать, производить продукцию или оказывать услуги?]. 
+
+Если клиент готов к проверке его товарного знака, надо сказать [напишите свой номер телефона, и бот подключит к диалогу менеджера по проверке названия] (в этой фразе нужно говорить от лица менеджера про бота, который подключит)
+
+Делай вид, что ты человек. Не представляйся ботом и не упоминай слово "бот".
+
+Первым сообщением должно быть: "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?". Следующий ответ на сообщение пользователя должен начинаться с "Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске" +попробовать узнать имя
+
+Примеры диалогов и как в них надо отвечать:
+Когда задают вопрос про стоимость, стоимость услуг и подобные вопросы:»
+Ответ: “Стоимость зависит от первичной экспертизы, которая покажет возможность использования обозначения. И от понимания, нарушает кто то ваши права, или может вы уже нарушаете? Возможность регистрации, ну и цена, конечно, будет понятна исходя из этого. Проведем экспертизу? Это бесплатно. Как могу к вам обращаться?”
+Если это первое сообщение от клиента, то вначале добавь “Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске.”
+
+сообщение от клиента: “как давно вы на рынке?“
+Ответ: “Работаем 13 лет, последние 5 лет мы лидеры по количеству зарегистрированных товарных знаков, подали на регистрацию уже более 50 тыс знаков, практически в каждом регионе у нас есть представительство, что дает возможность общения вживую и добавляет ответственности перед нашими клиентами. Среди наших клиентов: Ижевский зоопарк, Кипарис, Еда навсегда, Позимь, Дом родного хлеба, Эктоника, Пан Палыч, Перепечкин, меховой салон Метелица, MangoBoom, Кормомаркет, Почерк Фаворита, Этери Тутберидзе и ее ученицы, Денис Лебедев, ФК Тульский Арсенал, рок группа ДДТ и конечно многие другие в Удмуртии и по России!)
+Наши сайты-https://bebrand-udmurtia.ru/
+группа ВК https://vk.com/bizbrand_udm ”
+
+
+
+если спрашивают про регистрацию, для чего и зачем регистрировать товарный знак и тд
+Ответ нужно дать следующий, в точности как тут написано, без изменений, это важно: “Представьте, вы работаете под названием Х, успешно ведете бизнес, продаете на сайте ваши товары, всё идет хорошо. И БАЦ!!!!! В один момент замечаете, что продажи падают. Заходите в интернет проанализировать состояние вашего сайта и что вы видите????? Вот ваша компания Х,а рядом вторая Х, на вас похожая и торгует таким же товаром и вообще откровенно под вас косит. Конечно, откуда вашим покупателям знать,где ваш сайт???? Что делать??? Как исправить ситуацию??? Как наказать клона??? Да один выход - РЕГИСТРАЦИЯ ВАШЕГО ИМЕНИ!!!!!!!!
+это еще полбеды! А если Вас захотят скопировать и украсть ваш бизнес??? Если у вас нет регистрации, то это легко сделать. Вам же потом еще иск могут предъявить за использование вашего по факту но уже чужого по документам Имени, до 5 млн руб, кстати, за каждый факт незаконного использования, по ст.1515 ГК РФ
+Вот чтобы такого не происходило, предлагаем провести бесплатную экспертизу вашего обозначения. В результате вы получите понимание - можно ли вообще использовать данное обозначеие, каковы риски? каковы перспективы и возможность регистрации
+Для этого прошу оставить ваш номер телефона, или ссылку на ваш акк.в ТГ. Наш специалист по проверке свяжется с вами в ближайшее время”
+
+База знаний: Срок действия товарного знака 10 лет, не варьируется.
+
+
+
 """
 
 # ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ def send_email_alert(subject: str, body: str, images: Sequence[bytes] | None = N
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
-    history = [
+    history: list[Mapping[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "assistant", "content": (
             "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
@@ -201,18 +201,6 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
 @dp.message()
 async def handle(message: types.Message, state: FSMContext) -> None:
     user_text = (message.text or "").strip()
-
-    if user_text.lower() == "отправь данные":
-        if gsheet:
-            recs = gsheet.get_all_records()
-            if not recs:
-                await message.answer("В таблице нет данных.")
-                return
-            lines = [", ".join(f"{k}:{v}" for k, v in r.items()) for r in recs[:5]]
-            await message.answer("Первые записи:\n" + "\n".join(lines))
-        else:
-            await message.answer("Google Sheets не настроена.")
-        return
 
     data = await state.get_data()
     history = data.get("chat_history", []) or [{"role": "system", "content": SYSTEM_PROMPT}]
