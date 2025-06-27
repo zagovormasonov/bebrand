@@ -58,16 +58,18 @@ dp = Dispatcher(storage=storage)
 # Прямое встраивание creds.json в код (НЕ БЕЗОПАСНО для публичных реп)
 creds_json = {
     "type": "service_account",
-    "project_id": "my-project",
-    "private_key_id": "some_id",
-    "private_key": "-----BEGIN PRIVATE KEY-----\\nMIIEvgIBADANBgkqhki...\\n-----END PRIVATE KEY-----\\n",
-    "client_email": "my-service-account@my-project.iam.gserviceaccount.com",
-    "client_id": "1234567890",
+    "project_id": "dbtplus",
+    "private_key_id": "b310d3618d0c95a507c54727b99b07fec3ca0478",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCzPt5Xm2jrfrSP\nZovP7zsWQThTedCmWCyE6vAc5q99XR8wUZO86pmd1KiOGQeQlpeiaWSBi4ZBY6Bc\nQPnqyK0WGAb0TJ6vCd1eNq4EEv1e5opTZmrFmZev4x4c4LP083Fqk8RijC1YHMp7\nxuJ/YVBcWM4oE50WxRRyxU5bDPHDZXIn45ob7M+hXzp2I6jNQjnhSrB+nywJxSBu\ngtr+NEW/zqA3SBJ3hgaBmY7s8J0OB5+xPlAetV4Bu3qOawYWiUbXxYUe5yORGtqI\nZ1FetsTejCNeUUu5eEJBEQ3n1o2C5RcP052w+zPWDdJrt1QikhJoKYzZanjtaoGx\nil2VcgX/AgMBAAECggEABP80rZaMhzwiBnliXmqZ6BXrXxBfS7Pbkd0G0pdvvvvw\nmaU8jCCyJZ8/D68M8e/wzDtJ7P6ZwIrpdojtLqlngd0rnHXiWpjYzf6SPVTWMWYV\n5xtM0LNmciXPuhhdi++ZctIpwGGOBg3Pa0HxIIHy/pAPNzjMwUy/NC/h7lHfD4Zh\nhZW/SIEG14Y9hdfd+i2Zy6tuKbjcLFwlQEM/4YP3ETvUEViasX3BmI8ZqMUOgKUF\ny/mppeItW+6OgMPD9oOTtPhMez9w2Vy8+vKG2/fMJ1lkhjQVZmJBGTt9CL9TUA0F\nEw7ZGfojvrOBCEzdIAZ5rfNoFMJeso1vSQLDUjepoQKBgQDYmRgt+pUq/yI7ELT8\nDJ1oWS+6f89eu71bYqyacHuJLKKcIY8rXoQMqfy9pbyHhJKUP6QVdP2cPl4dh/35\nfOKXAxuw5EAXSBWraU1u7aFe6OUt/k7+++rbvbu0iTgp0naeQMZvur873fS/7cS5\nFsh3v4bLPiF+48iU7EQ4VGO4jwKBgQDT2kgl5QwR2bblUnYgWHQPbU+HjyHtXI7m\nelJg9E+0a4hQJVJUPPSm/KWdT8plKs1mGhpaHQ+38H7KjeKCH0AWdlyPNpmVNeGv\nhA6P12tqSGMEkIusYI+TJKt8Xd4iwr2fVLy6YxLzya7l9gugqpmVjgA2Tbw7WDi3\nmkAS5q4zkQKBgDIwd2vgDsShzfrFykpFWgwd7nNWvmSDOEN+v+QhgF6u2xc2p4gz\nJIISuZ/wUZlNXPHBNXJLY6DaytAo/O7cw1yeucHpgfhjGbJYejrkEWp+qOxZa1Cm\naytz8ZTJ3xvByv6sn86wBTQIIHiAzf7diqJE3SUnRneyrH3lqYEr/Nd9AoGAFGGe\nqU6k357DcsKBLNF1sPpCOXdyuyQ5d0DzZfJ7LI9f2N4OUp5epyYNRNolTaBVjGoc\neOjs1zRi7lfCH+SjxMV0WC7XjbxWTw10XTBLXDlElW7WkSnlBjHz8Y4STePQXGDJ\nm2DmtN+FXQhTzAw9pF659H98CXWOV1OWsHrS7ZECgYAvOcERwJbVGqFtadzw35WK\nhZUy5BSgVwQHz+9346aVC6D/4kfJPHFkLx31o4MbVv0fMekZqNvMB+OqZDJN5eEd\nHxLrVYZj/ydzF5TZN3VkQHdo9dpk5wEMihNMZa6z4gnz3DOaIlFqbzdAzt1bi+ge\nFU1az75M4iNIcY4eVcf1nw==\n-----END PRIVATE KEY-----\n",
+    "client_email": "google-sheets@dbtplus.iam.gserviceaccount.com",
+    "client_id": "106118640893119954817",
     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
     "token_uri": "https://oauth2.googleapis.com/token",
     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/my-service-account%40my-project.iam.gserviceaccount.com"
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/google-sheets%40dbtplus.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com"
 }
+
 
 
 # Инициализация Google Sheets (если настроено)
