@@ -33,7 +33,7 @@ YANDEX_APP_PASSWORD = os.environ.get('YANDEX_APP_PASSWORD')
 RENDER_DATA_DIR = os.environ.get('RENDER_DATA_DIR', '/tmp')
 
 # Переменные для Google Sheets
-GOOGLE_CREDS_JSON = os.environ.get('GOOGLE_CREDS_JSON')  # путь к service_account.json
+GOOGLE_CREDS_JSON = os.environ.get('creds.json')  # путь к service_account.json
 GOOGLE_SHEET_NAME = os.environ.get('GOOGLE_SHEET_NAME')  # имя таблицы
 
 # Проверка обязательных переменных
