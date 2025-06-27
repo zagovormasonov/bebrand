@@ -10,11 +10,16 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from openai import OpenAI
+
+# Для работы с Google Sheets
+from oauth2client.service_account import ServiceAccountCredentials
+import gspread
 
 # Конфигурация из переменных окружения
 API_TOKEN = os.environ.get('API_TOKEN')
@@ -25,6 +30,10 @@ EMAIL_TO = os.environ.get('EMAIL_TO')
 YANDEX_APP_PASSWORD = os.environ.get('YANDEX_APP_PASSWORD')
 RENDER_DATA_DIR = os.environ.get('RENDER_DATA_DIR', '/tmp')
 
+# Переменные для Google Sheets
+GOOGLE_CREDS_JSON = os.environ.get('GOOGLE_CREDS_JSON')  # путь к service_account.json
+GOOGLE_SHEET_NAME = os.environ.get('GOOGLE_SHEET_NAME')  # имя таблицы
+
 # Проверка обязательных переменных
 missing_vars = []
 for var_name, var_value in [
@@ -33,7 +42,9 @@ for var_name, var_value in [
     ('ALERT_CHAT_ID', ALERT_CHAT_ID),
     ('EMAIL_FROM', EMAIL_FROM),
     ('EMAIL_TO', EMAIL_TO),
-    ('YANDEX_APP_PASSWORD', YANDEX_APP_PASSWORD)
+    ('YANDEX_APP_PASSWORD', YANDEX_APP_PASSWORD),
+    ('GOOGLE_CREDS_JSON', GOOGLE_CREDS_JSON),
+    ('GOOGLE_SHEET_NAME', GOOGLE_SHEET_NAME),
 ]:
     if not var_value:
         missing_vars.append(var_name)
@@ -46,11 +57,17 @@ ALERT_CHAT_ID = int(ALERT_CHAT_ID)
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Инициализация клиентов
+# Инициализация OpenAI и бота
 client = OpenAI(api_key=OPENAI_API_KEY)
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+
+# Настройка подключения к Google Sheets
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_JSON, scope)
+gc = gspread.authorize(creds)
+sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
 # Регулярка для телефонов
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
@@ -91,6 +108,8 @@ SYSTEM_PROMPT = '''
 Наши сайты-https://bebrand-udmurtia.ru/
 группа ВК https://vk.com/bizbrand_udm ”
 
+
+
 если спрашивают про регистрацию, для чего и зачем регистрировать товарный знак и тд
 Ответ нужно дать следующий, в точности как тут написано, без изменений, это важно: “Представьте, вы работаете под названием Х, успешно ведете бизнес, продаете на сайте ваши товары, всё идет хорошо. И БАЦ!!!!! В один момент замечаете, что продажи падают. Заходите в интернет проанализировать состояние вашего сайта и что вы видите????? Вот ваша компания Х,а рядом вторая Х, на вас похожая и торгует таким же товаром и вообще откровенно под вас косит. Конечно, откуда вашим покупателям знать,где ваш сайт???? Что делать??? Как исправить ситуацию??? Как наказать клона??? Да один выход - РЕГИСТРАЦИЯ ВАШЕГО ИМЕНИ!!!!!!!!
 это еще полбеды! А если Вас захотят скопировать и украсть ваш бизнес??? Если у вас нет регистрации, то это легко сделать. Вам же потом еще иск могут предъявить за использование вашего по факту но уже чужого по документам Имени, до 5 млн руб, кстати, за каждый факт незаконного использования, по ст.1515 ГК РФ
@@ -99,13 +118,13 @@ SYSTEM_PROMPT = '''
 
 База знаний: Срок действия товарного знака 10 лет, не варьируется.
 
+
 '''
 
 # Путь к файлу базы
 DB_PATH = os.path.join(RENDER_DATA_DIR, "messages.db")
 
 def init_db(path=DB_PATH):
-    # Если файл существует, проверим его целостность
     if os.path.exists(path):
         try:
             conn = sqlite3.connect(path)
@@ -119,7 +138,6 @@ def init_db(path=DB_PATH):
         except sqlite3.DatabaseError:
             os.remove(path)
             logging.warning("DB removal on exception.")
-    # Создаём новую БД или подключаемся к существующей
     conn = sqlite3.connect(path, check_same_thread=False)
     cur = conn.cursor()
     cur.execute("""
@@ -135,7 +153,8 @@ def init_db(path=DB_PATH):
     conn.commit()
     return conn
 
-# Инициализация БД\conn = init_db()
+# Инициализация БД
+conn = init_db()
 
 # Функция отправки почты
 def send_email_alert(subject: str, body: str, images=None):
@@ -177,6 +196,22 @@ async def handle_message(message: types.Message, state: FSMContext):
     username = message.from_user.username or str(user_id)
     user_text = message.text.strip() if message.text else ""
 
+    # Специальная команда: отправить данные из Google Таблицы
+    if user_text.lower() == 'отправь данные':
+        records = sheet.get_all_records()
+        if not records:
+            await message.answer("В таблице нет данных.")
+        else:
+            # Форматируем первые 5 записей для ответа
+            lines = []
+            for row in records[:5]:
+                lines.append(
+                    ", ".join([f"{k}: {v}" for k, v in row.items()])
+                )
+            reply = "Вот первые записи из таблицы:\n" + "\n".join(lines)
+            await message.answer(reply)
+        return
+
     data = await state.get_data()
     history = data.get('chat_history') or [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -187,7 +222,7 @@ async def handle_message(message: types.Message, state: FSMContext):
     ]
     history.append({"role": "user", "content": user_text})
 
-    conn = init_db()  # убеждаемся, что БД в порядке
+    conn = init_db()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO messages (user_id, username, role, message) VALUES (?, ?, ?, ?)",
@@ -195,7 +230,7 @@ async def handle_message(message: types.Message, state: FSMContext):
     )
     conn.commit()
 
-    # Особая команда для отправки всей переписки
+    # Команда для отправки всей переписки менеджеру
     if user_text.lower() == "ананас":
         cursor.execute("SELECT role, message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,))
         rows = cursor.fetchall()
@@ -233,6 +268,7 @@ async def handle_message(message: types.Message, state: FSMContext):
         (user_id, username, 'assistant', reply)
     )
     conn.commit()
+
     await state.update_data(chat_history=history)
 
     # Задержка перед ответом для правдоподобности
