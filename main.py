@@ -39,6 +39,7 @@ try:
     from google.oauth2.service_account import Credentials
 except ImportError:  # pragma: no cover
     gspread = None  # type: ignore
+    
     Credentials = None  # type: ignore
 
 # ---------------------------------------------------------------------------
