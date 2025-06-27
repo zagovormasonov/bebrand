@@ -58,16 +58,17 @@ dp = Dispatcher(storage=storage)
 # Прямое встраивание creds.json в код (НЕ БЕЗОПАСНО для публичных реп)
 creds_json = {
     "type": "service_account",
-    "project_id": "your_project_id",
-    "private_key_id": "your_private_key_id",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n",
-    "client_email": "your_service_account_email@project.iam.gserviceaccount.com",
-    "client_id": "your_client_id",
+    "project_id": "my-project",
+    "private_key_id": "some_id",
+    "private_key": "-----BEGIN PRIVATE KEY-----\\nMIIEvgIBADANBgkqhki...\\n-----END PRIVATE KEY-----\\n",
+    "client_email": "my-service-account@my-project.iam.gserviceaccount.com",
+    "client_id": "1234567890",
     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
     "token_uri": "https://oauth2.googleapis.com/token",
     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/your_service_account_email%40project.iam.gserviceaccount.com"
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/my-service-account%40my-project.iam.gserviceaccount.com"
 }
+
 
 # Инициализация Google Sheets (если настроено)
 sheet = None
