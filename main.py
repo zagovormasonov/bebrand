@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Telegram-бот для первичного общения с клиентами BeBrand.
+Telegram‑бот для первичного общения с клиентами BeBrand.
 
 Исправлено:
 1. Убрана интеграция с Google Sheets.
-2. SMTP-хост берётся из переменной `SMTP_HOST` (по-умолчанию smtp.gmail.com).
+2. SMTP‑хост берётся из переменной `SMTP_HOST` (по‑умолчанию smtp.gmail.com).
 3. Добавлены аннотации типов и реорганизация кода.
 4. Для локальной БД предусмотрён путь из `RENDER_DATA_DIR` (volume на Render.com).
 """
 
-from __future__ import annotations
+
 
 import asyncio
 import json
@@ -60,7 +60,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# OpenAI & Telegram-бот
+# OpenAI & Telegram‑бот
 # ---------------------------------------------------------------------------
 openai.api_key = OPENAI_API_KEY
 bot = Bot(token=API_TOKEN)  # type: ignore[arg-type]
