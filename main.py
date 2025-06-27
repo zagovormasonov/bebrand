@@ -1,3 +1,6 @@
+# requirements:
+# pip install aiogram gspread google-auth openai
+
 import os
 import asyncio
 import logging
@@ -10,15 +13,14 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
-from openai import OpenAI
+import openai
 
 # Для работы с Google Sheets
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 import gspread
 
 # Конфигурация из переменных окружения
@@ -58,67 +60,24 @@ ALERT_CHAT_ID = int(ALERT_CHAT_ID)
 logging.basicConfig(level=logging.INFO)
 
 # Инициализация OpenAI и бота
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai.api_key = OPENAI_API_KEY
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # Настройка подключения к Google Sheets
-scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_JSON, scope)
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/drive']
+creds = Credentials.from_service_account_file(GOOGLE_CREDS_JSON, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sheet = gc.open(GOOGLE_SHEET_NAME).sheet1
 
 # Регулярка для телефонов
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
-# Системный промт
+# Системный промт (ваш полный текст сюда)
 SYSTEM_PROMPT = '''
-Отвечай только на русском языке. 
-
-Ответь как можно правдивее, используя предоставленный контекст выше.
-
-Тебе нужно не только ответить на вопросы, но продать клиенту бесплатную проверку его товарного знака. 
-
-Для этого можно задавать вопросы по регистрации. 
-
-Тебе нужно подсветить всевозможные подводные камни и риски - то есть, причины получить как можно скорее бесплатную проверку названия и логотипа клиента как потенциального товарного знака. Не надо писать сразу большие сообщения. 
-
-Задавай вопросы, чтобы беседа шла по сценарию, ведущему клиента к пониманию его болей и проблемы. 
-
-Не надо писать "Спасибо, что поделились, что у вас уже есть название и логотип", и подобные благодарности за ничего не стоящие человеку действия, это бред. Не надо повторять за человеком то, что он только что написал
-
-В первых нескольких сообщениях важно задать уточняющие вопросы. 
-
-Очень важно получить ответы на следующие вопросы: [-на каких площадках? вывеска будет у вас? на сайте? в соц сетях?маркетплейсы? реклама, радио, видео? будете продавать, производить продукцию или оказывать услуги?]. 
-
-Если клиент готов к проверке его товарного знака, надо сказать [напишите свой номер телефона, и бот подключит к диалогу менеджера по проверке названия] (в этой фразе нужно говорить от лица менеджера про бота, который подключит)
-
-Делай вид, что ты человек. Не представляйся ботом и не упоминай слово "бот".
-
-Первым сообщением должно быть: "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?". Следующий ответ на сообщение пользователя должен начинаться с "Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске" +попробовать узнать имя
-
-Примеры диалогов и как в них надо отвечать:
-Когда задают вопрос про стоимость, стоимость услуг и подобные вопросы:»
-Ответ: “Стоимость зависит от первичной экспертизы, которая покажет возможность использования обозначения. И от понимания, нарушает кто то ваши права, или может вы уже нарушаете? Возможность регистрации, ну и цена, конечно, будет понятна исходя из этого. Проведем экспертизу? Это бесплатно. Как могу к вам обращаться?”
-Если это первое сообщение от клиента, то вначале добавь “Здравствуйте, меня зовут Алексей Баженов, я руководитель удмуртского филиала компании BeBrand в Ижевске.”
-
-сообщение от клиента: “как давно вы на рынке?“
-Ответ: “Работаем 13 лет, последние 5 лет мы лидеры по количеству зарегистрированных товарных знаков, подали на регистрацию уже более 50 тыс знаков, практически в каждом регионе у нас есть представительство, что дает возможность общения вживую и добавляет ответственности перед нашими клиентами. Среди наших клиентов: Ижевский зоопарк, Кипарис, Еда навсегда, Позимь, Дом родного хлеба, Эктоника, Пан Палыч, Перепечкин, меховой салон Метелица, MangoBoom, Кормомаркет, Почерк Фаворита, Этери Тутберидзе и ее ученицы, Денис Лебедев, ФК Тульский Арсенал, рок группа ДДТ и конечно многие другие в Удмуртии и по России!)
-Наши сайты-https://bebrand-udmurtia.ru/
-группа ВК https://vk.com/bizbrand_udm ”
-
-
-
-если спрашивают про регистрацию, для чего и зачем регистрировать товарный знак и тд
-Ответ нужно дать следующий, в точности как тут написано, без изменений, это важно: “Представьте, вы работаете под названием Х, успешно ведете бизнес, продаете на сайте ваши товары, всё идет хорошо. И БАЦ!!!!! В один момент замечаете, что продажи падают. Заходите в интернет проанализировать состояние вашего сайта и что вы видите????? Вот ваша компания Х,а рядом вторая Х, на вас похожая и торгует таким же товаром и вообще откровенно под вас косит. Конечно, откуда вашим покупателям знать,где ваш сайт???? Что делать??? Как исправить ситуацию??? Как наказать клона??? Да один выход - РЕГИСТРАЦИЯ ВАШЕГО ИМЕНИ!!!!!!!!
-это еще полбеды! А если Вас захотят скопировать и украсть ваш бизнес??? Если у вас нет регистрации, то это легко сделать. Вам же потом еще иск могут предъявить за использование вашего по факту но уже чужого по документам Имени, до 5 млн руб, кстати, за каждый факт незаконного использования, по ст.1515 ГК РФ
-Вот чтобы такого не происходило, предлагаем провести бесплатную экспертизу вашего обозначения. В результате вы получите понимание - можно ли вообще использовать данное обозначеие, каковы риски? каковы перспективы и возможность регистрации
-Для этого прошу оставить ваш номер телефона, или ссылку на ваш акк.в ТГ. Наш специалист по проверке свяжется с вами в ближайшее время”
-
-База знаний: Срок действия товарного знака 10 лет, не варьируется.
-
-
+... ваш системный промт ...
 '''
 
 # Путь к файлу базы
@@ -154,7 +113,7 @@ def init_db(path=DB_PATH):
     return conn
 
 # Инициализация БД
-conn = init_db()
+db_conn = init_db()
 
 # Функция отправки почты
 def send_email_alert(subject: str, body: str, images=None):
@@ -202,12 +161,8 @@ async def handle_message(message: types.Message, state: FSMContext):
         if not records:
             await message.answer("В таблице нет данных.")
         else:
-            # Форматируем первые 5 записей для ответа
-            lines = []
-            for row in records[:5]:
-                lines.append(
-                    ", ".join([f"{k}: {v}" for k, v in row.items()])
-                )
+            lines = [", ".join(f"{k}: {v}" for k, v in row.items())
+                     for row in records[:5]]
             reply = "Вот первые записи из таблицы:\n" + "\n".join(lines)
             await message.answer(reply)
         return
@@ -222,26 +177,26 @@ async def handle_message(message: types.Message, state: FSMContext):
     ]
     history.append({"role": "user", "content": user_text})
 
-    conn = init_db()
-    cursor = conn.cursor()
+    db_conn = init_db()
+    cursor = db_conn.cursor()
     cursor.execute(
         "INSERT INTO messages (user_id, username, role, message) VALUES (?, ?, ?, ?)",
         (user_id, username, 'user', user_text)
     )
-    conn.commit()
+    db_conn.commit()
 
-    # Команда для отправки всей переписки менеджеру
     if user_text.lower() == "ананас":
-        cursor.execute("SELECT role, message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,))
+        cursor.execute(
+            "SELECT role, message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp",
+            (user_id,)
+        )
         rows = cursor.fetchall()
         history_text = f"Переписка с @{username} (id {user_id}):\n\n"
-        for role, msg, ts in rows:
-            history_text += f"[{ts}] ({role}) {msg}\n"
+        history_text += "\n".join(f"[{ts}] ({role}) {msg}" for role, msg, ts in rows)
         send_email_alert(f"Переписка с @{username}", history_text)
         await message.answer("Вся переписка отправлена менеджеру по почте.")
         return
 
-    # Поиск телефона в сообщении
     match = PHONE_REGEX.search(user_text)
     if match:
         phone = match.group(1)
@@ -249,9 +204,8 @@ async def handle_message(message: types.Message, state: FSMContext):
         await bot.send_message(ALERT_CHAT_ID, alert_text)
         send_email_alert('Новый номер клиента', alert_text)
 
-    # Вызов OpenAI
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=history,
             max_tokens=500,
@@ -267,12 +221,10 @@ async def handle_message(message: types.Message, state: FSMContext):
         "INSERT INTO messages (user_id, username, role, message) VALUES (?, ?, ?, ?)",
         (user_id, username, 'assistant', reply)
     )
-    conn.commit()
-
+    db_conn.commit()
     await state.update_data(chat_history=history)
 
-    # Задержка перед ответом для правдоподобности
-    await asyncio.sleep(random.uniform(5.0, 5.0))
+    await asyncio.sleep(5)
     await message.answer(reply)
 
 async def main():
