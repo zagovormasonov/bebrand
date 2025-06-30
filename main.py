@@ -1,13 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Telegram‑бот BeBrand: диалог + выгрузка Google Sheets.
-
-Изменения:
-* Добавлена интеграция с Google Sheets. Таблица открывается по имени
-  из переменной окружения `GOOGLE_SHEET_NAME`, сервис‑ключ — `GOOGLE_SA_JSON`.
-* По команде «отправить данные» (или «отправь данные») бот отсылает
-  всё содержимое первой страницы: либо текстом (разбивая по 4000 симв.),
-  либо сообщением «Google Sheets не настроена».
-"""
+"""Telegram‑бот BeBrand: диалог + выгрузка Google Sheets."""
 
 from __future__ import annotations
 
@@ -37,9 +29,8 @@ from openai import OpenAI
 try:
     import gspread
     from google.oauth2.service_account import Credentials
-except ImportError:  # pragma: no cover
+except ImportError:
     gspread = None  # type: ignore
-    
     Credentials = None  # type: ignore
 
 # ---------------------------------------------------------------------------
@@ -64,61 +55,63 @@ _required = [
     ("EMAIL_TO", EMAIL_TO),
     ("SMTP_PASSWORD", SMTP_PASSWORD),
 ]
-_missing = [n for n, v in _required if not v]
+_missing = [name for name, val in _required if not val]
 if _missing:
     raise RuntimeError(f"Missing environment variables: {', '.join(_missing)}")
 
-ALERT_CHAT_ID = int(ALERT_CHAT_ID_RAW)  # type: ignore[arg-type]
+ALERT_CHAT_ID = int(ALERT_CHAT_ID_RAW)
 
 # ---------------------------------------------------------------------------
 # Логирование
 # ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# OpenAI и Telegram
+# Клиенты
 # ---------------------------------------------------------------------------
 client = OpenAI(api_key=OPENAI_API_KEY)
-bot = Bot(token=API_TOKEN)  # type: ignore[arg-type]
+bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # ---------------------------------------------------------------------------
 # Google Sheets
 # ---------------------------------------------------------------------------
-
-def init_google_sheet():  # -> gspread.models.Worksheet | None
+def init_google_sheet() -> gspread.models.Spreadsheet | None:
     if not (GOOGLE_SHEET_NAME and gspread and Credentials and GOOGLE_SA_JSON):
         logger.info("Google Sheets not configured or libraries missing")
         return None
     try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
         creds_info = json.loads(GOOGLE_SA_JSON)
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)  # type: ignore[arg-type]
+        creds = Credentials.from_service_account_info(
+            creds_info,
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ],
+        )
         gc = gspread.authorize(creds)
-        sheet = gc.open(GOOGLE_SHEET_NAME).sheet1  # type: ignore[attr-defined]
-        logger.info("Google Sheet '%s' connected", GOOGLE_SHEET_NAME)
-        return sheet
-    except Exception as exc:
-        logger.error("Google Sheets init failed: %s", exc)
+        return gc.open(GOOGLE_SHEET_NAME).sheet1
+    except Exception as e:
+        logger.error("Google Sheets init failed: %s", e)
         return None
-
 
 gsheet = init_google_sheet()
 
 # ---------------------------------------------------------------------------
-# Регулярка
+# Регулярное выражение для телефона
 # ---------------------------------------------------------------------------
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
 # ---------------------------------------------------------------------------
-# Системный промт
+# Системный промпт для ChatGPT
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = (
+'''
 Отвечай только на русском языке. 
 
 Ответь как можно правдивее, используя предоставленный контекст выше.
@@ -153,21 +146,18 @@ SYSTEM_PROMPT = """
 Наши сайты-https://bebrand-udmurtia.ru/
 группа ВК https://vk.com/bizbrand_udm ”
 
-
-
 если спрашивают про регистрацию, для чего и зачем регистрировать товарный знак и тд
-Ответ нужно дать следующий, в точности как тут написано, без изменений, это важно: “Представьте, вы работаете под названием Х, успешно ведете бизнес, продаете на сайте ваши товары, всё идет хорошо. И БАЦ!!!!! В один момент замечаете, что продажи падают. Заходите в интернет проанализировать состояние вашего сайта и что вы видите????? Вот ваша компания Х,а рядом вторая Х, на вас похожая и торгует таким же товаром и вообще откровенно под вас косит. Конечно, откуда вашим покупателям знать,где ваш сайт???? Что делать??? Как исправить ситуацию??? Как наказать клона??? Да один выход - РЕГИСТРАЦИЯ ВАШЕГО ИМЕНИ!!!!!!!!
+Ответ: “Представьте, вы работаете под названием Х, успешно ведете бизнес, продаете на сайте ваши товары, всё идет хорошо. И БАЦ!!!!! В один момент замечаете, что продажи падают. Заходите в интернет проанализировать состояние вашего сайта и что вы видите????? Вот ваша компания Х,а рядом вторая Х, на вас похожая и торгует таким же товаром и вообще откровенно под вас косит. Конечно, откуда вашим покупателям знать,где ваш сайт???? Что делать??? Как исправить ситуацию??? Как наказать клона??? Да один выход - РЕГИСТРАЦИЯ ВАШЕГО ИМЕНИ!!!!!!!!
 это еще полбеды! А если Вас захотят скопировать и украсть ваш бизнес??? Если у вас нет регистрации, то это легко сделать. Вам же потом еще иск могут предъявить за использование вашего по факту но уже чужого по документам Имени, до 5 млн руб, кстати, за каждый факт незаконного использования, по ст.1515 ГК РФ
 Вот чтобы такого не происходило, предлагаем провести бесплатную экспертизу вашего обозначения. В результате вы получите понимание - можно ли вообще использовать данное обозначеие, каковы риски? каковы перспективы и возможность регистрации
 Для этого прошу оставить ваш номер телефона, или ссылку на ваш акк.в ТГ. Наш специалист по проверке свяжется с вами в ближайшее время”
 
 База знаний: Срок действия товарного знака 10 лет, не варьируется.
-
-
-"""
+'''
+)
 
 # ---------------------------------------------------------------------------
-# База данных
+# Инициализация базы данных
 # ---------------------------------------------------------------------------
 DB_PATH = Path(RENDER_DATA_DIR) / "messages.db"
 
@@ -185,11 +175,11 @@ def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS messages (
-            user_id   INTEGER,
-            username  TEXT,
-            role      TEXT,
-            message   TEXT,
-            image     BLOB,
+            user_id INTEGER,
+            username TEXT,
+            role TEXT,
+            message TEXT,
+            image BLOB,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -197,45 +187,48 @@ def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
     conn.commit()
     return conn
 
-
-db_conn = init_db()
+db = init_db()
 
 # ---------------------------------------------------------------------------
-# Email helper
+# Отправка email-уведомлений
 # ---------------------------------------------------------------------------
 
-def send_email_alert(subject: str, body: str, images: Sequence[bytes] | None = None) -> None:
+def send_email_alert(
+    subject: str, body: str, images: Sequence[bytes] | None = None
+) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO  # type: ignore[arg-type]
-    msg.attach(MIMEText(body))
+    msg["To"] = EMAIL_TO
+    msg.attach(MIMEText(body, "plain"))
     if images:
-        for i, data in enumerate(images):
+        for idx, data in enumerate(images):
             part = MIMEBase("application", "octet-stream")
             part.set_payload(data)
             encoders.encode_base64(part)
-            part.add_header("Content-Disposition", f"attachment; filename=img{i}.jpg")
+            part.add_header(
+                "Content-Disposition", f"attachment; filename=img{idx}.jpg"
+            )
             msg.attach(part)
     try:
-        with smtplib.SMTP_SSL(SMTP_HOST, 465) as srv:
-            srv.login(EMAIL_FROM, SMTP_PASSWORD)  # type: ignore[arg-type]
-            srv.send_message(msg)
-    except Exception as exc:
-        logger.error("Email send failed: %s", exc)
+        with smtplib.SMTP_SSL(SMTP_HOST, 465) as smtp:
+            smtp.login(EMAIL_FROM, SMTP_PASSWORD)
+            smtp.send_message(msg)
+    except Exception as e:
+        logger.error("Failed to send email: %s", e)
 
 # ---------------------------------------------------------------------------
-# Хэндлеры
+# Хэндлер команд и сообщений
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
-    history: list[MutableMapping[str, Any]] = [
+    history = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "assistant",
             "content": (
                 "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
-                "есть ли у вас уже название или логотип для вашего бизнеса?",
+                "есть ли у вас уже название или логотип для вашего бизнеса?"
             ),
         },
     ]
@@ -245,81 +238,82 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
 
 @dp.message()
 async def handle(message: types.Message, state: FSMContext) -> None:
-    user_text = (message.text or "").strip()
+    text = message.text or ""
+    user_text = text.strip()
 
-    # ---------- команда «отправить данные» ----------
+    # Отправка данных из Google Sheets
     if user_text.lower() in {"отправь данные", "отправить данные"}:
-        if gsheet is None:
+        if not gsheet:
             await message.answer("Google Sheets не настроена.")
         else:
-            values = gsheet.get_all_values()  # type: ignore[func-returns-value]
-            if not values:
+            rows = gsheet.get_all_values()
+            if not rows:
                 await message.answer("Таблица пуста.")
             else:
-                # формируем текст, разбиваем на части 4000 символов
-                text_rows = ["\t".join(map(str, row)) for row in values]
-                full_text = "\n".join(text_rows)
-                for i in range(0, len(full_text), 4000):
-                    await message.answer(full_text[i : i + 4000])
+                txt = "\n".join("\t".join(row) for row in rows)
+                for chunk in (txt[i:i+4000] for i in range(0, len(txt), 4000)):
+                    await message.answer(chunk)
         return
 
-    # ---------- обычный диалог ----------
+    # Загрузка истории
     data = await state.get_data()
-    history = data.get("chat_history", []) or [{"role": "system", "content": SYSTEM_PROMPT}]
+    history = data.get("chat_history") or [{"role": "system", "content": SYSTEM_PROMPT}]
     history.append({"role": "user", "content": user_text})
 
-    # сохраняем
-    cur = db_conn.cursor()
+    # Сохранение в БД
+    cur = db.cursor()
     cur.execute(
         "INSERT INTO messages(user_id, username, role, message) VALUES(?,?,?,?)",
         (message.from_user.id, message.from_user.username or "", "user", user_text),
     )
-    db_conn.commit()
+    db.commit()
 
-    # телефон
-    m = PHONE_REGEX.search(user_text)
-    if m:
-        txt = f"Пользователь оставил тел.: {m.group(1)}"
-        await bot.send_message(ALERT_CHAT_ID, txt)
-        send_email_alert("Телефон", txt)
+    # Детект телефона
+    match = PHONE_REGEX.search(user_text)
+    if match:
+        phone = match.group(1)
+        alert = f"Пользователь оставил тел.: {phone}"
+        await bot.send_message(ALERT_CHAT_ID, alert)
+        send_email_alert("Телефон", alert)
 
-    # команда «ананас»
+    # Команда «ананас»
     if user_text.lower() == "ананас":
         rows = cur.execute(
             "SELECT role, message, timestamp FROM messages WHERE user_id=? ORDER BY timestamp",
             (message.from_user.id,),
         ).fetchall()
-        txt = "".join(f"[{ts}] {role}: {msg}\n" for role, msg, ts in rows)
-        send_email_alert("Переписка", txt)
+        log = "".join(f"[{ts}] {r}: {m}\n" for r, m, ts in rows)
+        send_email_alert("Переписка", log)
         await message.answer("Отправлено менеджеру")
         return
 
-    # ChatGPT
+    # Вызов OpenAI ChatGPT
     try:
-        resp = client.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=history,
             max_tokens=500,
             temperature=0.9,
         )
-        reply = resp.choices[0].message.content  # type: ignore[attr-defined]
+        reply = response.choices[0].message.content
     except Exception:
         logger.exception("OpenAI API error")
         reply = "Ошибка. Попробуйте позже."
 
+    # Отправка и сохранение ответа
     history.append({"role": "assistant", "content": reply})
     await state.update_data(chat_history=history)
     cur.execute(
-        "INSERT INTO messages(user_id, username, role, message, image, timestamp) VALUES(?,?,?,?,NULL,datetime('now'))",
+        "INSERT INTO messages(user_id, username, role, message, image, timestamp) VALUES(?,?,?,?,NULL, CURRENT_TIMESTAMP)",
         (message.from_user.id, message.from_user.username or "", "assistant", reply),
     )
-    db_conn.commit()
-
-    await asyncio.sleep(3)
+    db.commit()
+    await asyncio.sleep(1)
     await message.answer(reply)
 
+
 # ---------------------------------------------------------------------------
-# Entrypoint
+# Точка входа
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("Bot starting…")
