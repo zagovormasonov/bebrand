@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Telegram‑бот BeBrand: диалог + выгрузка Google Sheets + follow-up reminders."""
+"""Telegram‑бот BeBrand: диалог + Google Sheets + follow-ups + настроение + утренние сообщения."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Sequence
+from datetime import datetime, time, timedelta
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -23,8 +24,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from openai import OpenAI
 
+# Sentiment analysis
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+sia = SentimentIntensityAnalyzer()
+
 # ---------------------------------------------------------------------------
-# Опциональные зависимости (Google)
+# Optional Google dependencies
 # ---------------------------------------------------------------------------
 try:
     import gspread
@@ -34,7 +39,7 @@ except ImportError:
     Credentials = None  # type: ignore
 
 # ---------------------------------------------------------------------------
-# Конфигурация
+# Configuration
 # ---------------------------------------------------------------------------
 API_TOKEN = os.getenv("API_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -62,7 +67,7 @@ if _missing:
 ALERT_CHAT_ID = int(ALERT_CHAT_ID_RAW)
 
 # ---------------------------------------------------------------------------
-# Логирование
+# Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -71,7 +76,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Клиенты
+# Clients
 # ---------------------------------------------------------------------------
 client = OpenAI(api_key=OPENAI_API_KEY)
 bot = Bot(token=API_TOKEN)
@@ -79,8 +84,9 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # ---------------------------------------------------------------------------
-# Google Sheets
+# Google Sheets init
 # ---------------------------------------------------------------------------
+
 def init_google_sheet() -> gspread.models.Spreadsheet | None:
     if not (GOOGLE_SHEET_NAME and gspread and Credentials and GOOGLE_SA_JSON):
         logger.info("Google Sheets not configured or libraries missing")
@@ -103,16 +109,16 @@ def init_google_sheet() -> gspread.models.Spreadsheet | None:
 gsheet = init_google_sheet()
 
 # ---------------------------------------------------------------------------
-# Регулярное выражение для телефона
+# Phone regex
 # ---------------------------------------------------------------------------
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
 # ---------------------------------------------------------------------------
-# Системный промпт для ChatGPT
+# System prompt (omitted for brevity)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     '''
-    Отвечай только на русском языке. 
+Отвечай только на русском языке. 
 
 Говори о себе только в мужском роде.
 
@@ -181,44 +187,42 @@ SYSTEM_PROMPT = (
 )
 
 # ---------------------------------------------------------------------------
-# Инициализация базы данных
+# DB init with mood column
 # ---------------------------------------------------------------------------
 DB_PATH = Path(RENDER_DATA_DIR) / "messages.db"
 
 def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
-    if path.exists():
-        try:
-            conn = sqlite3.connect(path)
-            cur = conn.cursor()
-            cur.execute("PRAGMA integrity_check;")
-            if cur.fetchone()[0] != "ok":
-                path.unlink()
-        except sqlite3.DatabaseError:
-            path.unlink()
+    new = not path.exists()
     conn = sqlite3.connect(path, check_same_thread=False)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS messages (
-            user_id INTEGER,
-            username TEXT,
-            role TEXT,
-            message TEXT,
-            image BLOB,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    cur = conn.cursor()
+    if new:
+        cur.execute(
+            """
+            CREATE TABLE messages (
+                user_id INTEGER,
+                username TEXT,
+                role TEXT,
+                message TEXT,
+                mood TEXT,
+                image BLOB,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-        """
-    )
+    else:
+        cur.execute("PRAGMA table_info(messages);")
+        cols = [r[1] for r in cur.fetchall()]
+        if 'mood' not in cols:
+            cur.execute("ALTER TABLE messages ADD COLUMN mood TEXT;")
     conn.commit()
     return conn
 
 db = init_db()
 
 # ---------------------------------------------------------------------------
-# Отправка email-уведомлений
+# Email alerts
 # ---------------------------------------------------------------------------
-def send_email_alert(
-    subject: str, body: str, images: Sequence[bytes] | None = None
-) -> None:
+def send_email_alert(subject: str, body: str, images: Sequence[bytes] | None = None) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = EMAIL_FROM
@@ -229,9 +233,7 @@ def send_email_alert(
             part = MIMEBase("application", "octet-stream")
             part.set_payload(data)
             encoders.encode_base64(part)
-            part.add_header(
-                "Content-Disposition", f"attachment; filename=img{idx}.jpg"
-            )
+            part.add_header("Content-Disposition", f"attachment; filename=img{idx}.jpg")
             msg.attach(part)
     try:
         with smtplib.SMTP_SSL(SMTP_HOST, 465) as smtp:
@@ -241,9 +243,8 @@ def send_email_alert(
         logger.error("Failed to send email: %s", e)
 
 # ---------------------------------------------------------------------------
-# Follow-up reminders management
+# Follow-up reminders
 # ---------------------------------------------------------------------------
-# Хранит задачи напоминаний по chat_id
 followup_tasks: dict[int, tuple[asyncio.Task, asyncio.Task]] = {}
 
 async def schedule_followup_30(chat_id: int):
@@ -258,43 +259,29 @@ async def schedule_followup_180(chat_id: int):
         await asyncio.sleep(180)
         await bot.send_message(
             chat_id,
-            "Понимаю, мой ответ возможно вас не устроил. "
-            "Но на самом деле, чтобы ответить на ваши вопросы, "
-            "необходимо провести первичную диагностику, "
-            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию"
+            "Понимаю, мой ответ возможно вас не устроил. Но на самом деле, чтобы ответить на ваши вопросы, необходимо провести первичную диагностику, чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию"
         )
     except asyncio.CancelledError:
-        # если отменили, просто выходим
         return
-    # после успешной отправки — удаляем задачи, чтобы не повторять
     followup_tasks.pop(chat_id, None)
 
 # ---------------------------------------------------------------------------
-# Хэндлер команд и сообщений
+# Handlers
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
-    # Отмена старых задач, если есть
     chat_id = message.chat.id
     if chat_id in followup_tasks:
-        for t in followup_tasks[chat_id]:
-            t.cancel()
+        for t in followup_tasks[chat_id]: t.cancel()
         followup_tasks.pop(chat_id, None)
 
     history = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "assistant",
-            "content": (
-                "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
-                "есть ли у вас уже название или логотип для вашего бизнеса?"
-            ),
-        },
+        {"role": "assistant", "content": "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?"},
     ]
     await state.update_data(chat_history=history)
     await message.answer(history[-1]["content"])
 
-    # Планируем follow-up после ответа
     task30 = asyncio.create_task(schedule_followup_30(chat_id))
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
     followup_tasks[chat_id] = (task30, task180)
@@ -302,27 +289,58 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
 @dp.message()
 async def handle(message: types.Message, state: FSMContext) -> None:
     chat_id = message.chat.id
-    text = message.text or ""
-    user_text = text.strip()
+    user_text = (message.text or "").strip()
 
-    # Отменяем любые ранее запланированные напоминалки
+    # cancel previous reminders
     if chat_id in followup_tasks:
-        for task in followup_tasks[chat_id]:
-            task.cancel()
+        for t in followup_tasks[chat_id]: t.cancel()
         followup_tasks.pop(chat_id, None)
 
-    # … здесь остальной ваш код (Google Sheets, сохранение в БД, детект телефона, «ананас», OpenAI и т.д.)
+    # Sentiment analysis
+    scores = sia.polarity_scores(user_text)
+    c = scores['compound']
+    if c <= -0.5:
+        mood = 'angry'
+    elif c >= 0.5:
+        mood = 'happy'
+    else:
+        mood = 'neutral'
 
-    # Допустим, мы получили и отправили reply:
-    # await message.answer(reply)
+    # Save message with mood
+    cur = db.cursor()
+    cur.execute(
+        "INSERT INTO messages(user_id, username, role, message, mood) VALUES(?,?,?,?,?)",
+        (message.from_user.id, message.from_user.username or "", "user", user_text, mood),
+    )
+    db.commit()
 
-    # И снова планируем follow-up только один раз
+    # TODO: Google Sheets, phone detect, "ананас", OpenAI chat GPT...
+    # Here you generate `reply` via OpenAI or other logic, then:
+    reply = "<ваш ответ>"
+    await message.answer(reply)
+
+    # Followups
     task30 = asyncio.create_task(schedule_followup_30(chat_id))
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
     followup_tasks[chat_id] = (task30, task180)
 
+    # Schedule morning message
+    async def morning_message():
+        now = datetime.now()
+        next9 = datetime.combine(now.date() + timedelta(days=1), time(9, 0))
+        await asyncio.sleep((next9 - now).total_seconds())
+        if mood == 'angry':
+            text = "Доброе утро! Понимаю, вчера было непросто. Готов обсудить и найти решение."
+        elif mood == 'happy':
+            text = "Доброе утро! Рад, что вы в хорошем настроении. Чем могу помочь сегодня?"
+        else:
+            text = "Доброе утро! Как у вас дела сегодня? Готов продолжить наш разговор."
+        await bot.send_message(chat_id, text)
+
+    asyncio.create_task(morning_message())
+
 # ---------------------------------------------------------------------------
-# Точка входа
+# Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("Bot starting…")
