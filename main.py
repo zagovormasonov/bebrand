@@ -15,7 +15,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Sequence
+from typing import Any, MutableMapping, Sequence
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -112,7 +112,7 @@ PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     '''
-    Отвечай только на русском языке. 
+Отвечай только на русском языке. 
 
 Говори о себе только в мужском роде.
 
@@ -176,7 +176,6 @@ SYSTEM_PROMPT = (
 
 
 База знаний: Срок действия товарного знака 10 лет, не варьируется.
-
 '''
 )
 
@@ -261,13 +260,11 @@ async def schedule_followup_180(chat_id: int):
             "Понимаю, мой ответ возможно вас не устроил. "
             "Но на самом деле, чтобы ответить на ваши вопросы, "
             "необходимо провести первичную диагностику, "
-            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию"
+            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию \
+             Согласитесь, вы же не хотите, чтобы вам врали?)"
         )
     except asyncio.CancelledError:
-        # если отменили, просто выходим
-        return
-    # после успешной отправки — удаляем задачи, чтобы не повторять
-    followup_tasks.pop(chat_id, None)
+        pass
 
 # ---------------------------------------------------------------------------
 # Хэндлер команд и сообщений
@@ -279,7 +276,7 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
     if chat_id in followup_tasks:
         for t in followup_tasks[chat_id]:
             t.cancel()
-        followup_tasks.pop(chat_id, None)
+        del followup_tasks[chat_id]
 
     history = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -309,14 +306,79 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     if chat_id in followup_tasks:
         for task in followup_tasks[chat_id]:
             task.cancel()
-        followup_tasks.pop(chat_id, None)
+        del followup_tasks[chat_id]
 
-    # … здесь остальной ваш код (Google Sheets, сохранение в БД, детект телефона, «ананас», OpenAI и т.д.)
+    # Отправка данных из Google Sheets
+    if user_text.lower() in {"отправь данные", "отправить данные"}:
+        if not gsheet:
+            await message.answer("Google Sheets не настроена.")
+        else:
+            rows = gsheet.get_all_values()
+            if not rows:
+                await message.answer("Таблица пуста.")
+            else:
+                txt = "\n".join("\t".join(row) for row in rows)
+                for chunk in (txt[i:i+4000] for i in range(0, len(txt), 4000)):
+                    await message.answer(chunk)
+        return
 
-    # Допустим, мы получили и отправили reply:
-    # await message.answer(reply)
+    # Загрузка истории
+    data = await state.get_data()
+    history = data.get("chat_history") or [{"role": "system", "content": SYSTEM_PROMPT}]
+    history.append({"role": "user", "content": user_text})
 
-    # И снова планируем follow-up только один раз
+    # Сохранение в БД
+    cur = db.cursor()
+    cur.execute(
+        "INSERT INTO messages(user_id, username, role, message) VALUES(?,?,?,?)",
+        (message.from_user.id, message.from_user.username or "", "user", user_text),
+    )
+    db.commit()
+
+    # Детект телефона
+    match = PHONE_REGEX.search(user_text)
+    if match:
+        phone = match.group(1)
+        alert = f"Пользователь оставил тел.: {phone}"
+        await bot.send_message(ALERT_CHAT_ID, alert)
+        send_email_alert("Телефон", alert)
+
+    # Команда «ананас»
+    if user_text.lower() == "ананас":
+        rows = cur.execute(
+            "SELECT role, message, timestamp FROM messages WHERE user_id=? ORDER BY timestamp",
+            (message.from_user.id,),
+        ).fetchall()
+        log = "".join(f"[{ts}] {r}: {m}\n" for r, m, ts in rows)
+        send_email_alert("Переписка", log)
+        await message.answer("Отправлено менеджеру")
+        return
+
+    # Вызов OpenAI ChatGPT
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=history,
+            max_tokens=500,
+            temperature=0.9,
+        )
+        reply = response.choices[0].message.content
+    except Exception:
+        logger.exception("OpenAI API error")
+        reply = "Ошибка. Попробуйте позже."
+
+    # Отправка и сохранение ответа
+    history.append({"role": "assistant", "content": reply})
+    await state.update_data(chat_history=history)
+    cur.execute(
+        "INSERT INTO messages(user_id, username, role, message, image, timestamp) VALUES(?,?,?,?,NULL, CURRENT_TIMESTAMP)",
+        (message.from_user.id, message.from_user.username or "", "assistant", reply),
+    )
+    db.commit()
+    await asyncio.sleep(1)
+    await message.answer(reply)
+
+    # Планируем follow-up после ответа
     task30 = asyncio.create_task(schedule_followup_30(chat_id))
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
     followup_tasks[chat_id] = (task30, task180)
