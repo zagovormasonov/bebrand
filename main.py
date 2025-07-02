@@ -15,7 +15,7 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any, MutableMapping, Sequence
+from typing import Sequence
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -107,12 +107,8 @@ gsheet = init_google_sheet()
 # ---------------------------------------------------------------------------
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
-# ---------------------------------------------------------------------------
-# Системный промпт для ChatGPT
-# ---------------------------------------------------------------------------
-SYSTEM_PROMPT = (
-    '''
-Отвечай только на русском языке. 
+SYSTEM_PROMPT = '''
+    Отвечай только на русском языке. 
 
 Говори о себе только в мужском роде.
 
@@ -176,8 +172,8 @@ SYSTEM_PROMPT = (
 
 
 База знаний: Срок действия товарного знака 10 лет, не варьируется.
+
 '''
-)
 
 # ---------------------------------------------------------------------------
 # Инициализация базы данных
@@ -242,8 +238,7 @@ def send_email_alert(
 # ---------------------------------------------------------------------------
 # Follow-up reminders management
 # ---------------------------------------------------------------------------
-# Хранит задачи напоминаний по chat_id
-followup_tasks: dict[int, tuple[asyncio.Task, asyncio.Task]] = {}
+followup_tasks: dict[int, tuple[asyncio.Task | None, asyncio.Task]] = {}
 
 async def schedule_followup_30(chat_id: int):
     try:
@@ -260,8 +255,8 @@ async def schedule_followup_180(chat_id: int):
             "Понимаю, мой ответ возможно вас не устроил. "
             "Но на самом деле, чтобы ответить на ваши вопросы, "
             "необходимо провести первичную диагностику, "
-            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию \
-             Согласитесь, вы же не хотите, чтобы вам врали?)"
+            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию "
+             "Согласитесь, вы же не хотите, чтобы вам врали?)"
         )
     except asyncio.CancelledError:
         pass
@@ -271,27 +266,23 @@ async def schedule_followup_180(chat_id: int):
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
-    # Отмена старых задач, если есть
     chat_id = message.chat.id
     if chat_id in followup_tasks:
         for t in followup_tasks[chat_id]:
-            t.cancel()
+            if t:
+                t.cancel()
         del followup_tasks[chat_id]
 
     history = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "assistant",
-            "content": (
-                "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
-                "есть ли у вас уже название или логотип для вашего бизнеса?"
-            ),
-        },
+        {"role": "assistant", "content": (
+            "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
+            "есть ли у вас уже название или логотип для вашего бизнеса?"
+        )},
     ]
     await state.update_data(chat_history=history)
     await message.answer(history[-1]["content"])
 
-    # Планируем follow-up после ответа
     task30 = asyncio.create_task(schedule_followup_30(chat_id))
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
     followup_tasks[chat_id] = (task30, task180)
@@ -302,13 +293,12 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     text = message.text or ""
     user_text = text.strip()
 
-    # Отменяем любые ранее запланированные напоминалки
     if chat_id in followup_tasks:
         for task in followup_tasks[chat_id]:
-            task.cancel()
+            if task:
+                task.cancel()
         del followup_tasks[chat_id]
 
-    # Отправка данных из Google Sheets
     if user_text.lower() in {"отправь данные", "отправить данные"}:
         if not gsheet:
             await message.answer("Google Sheets не настроена.")
@@ -322,12 +312,10 @@ async def handle(message: types.Message, state: FSMContext) -> None:
                     await message.answer(chunk)
         return
 
-    # Загрузка истории
     data = await state.get_data()
     history = data.get("chat_history") or [{"role": "system", "content": SYSTEM_PROMPT}]
     history.append({"role": "user", "content": user_text})
 
-    # Сохранение в БД
     cur = db.cursor()
     cur.execute(
         "INSERT INTO messages(user_id, username, role, message) VALUES(?,?,?,?)",
@@ -335,7 +323,6 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     )
     db.commit()
 
-    # Детект телефона
     match = PHONE_REGEX.search(user_text)
     if match:
         phone = match.group(1)
@@ -343,7 +330,6 @@ async def handle(message: types.Message, state: FSMContext) -> None:
         await bot.send_message(ALERT_CHAT_ID, alert)
         send_email_alert("Телефон", alert)
 
-    # Команда «ананас»
     if user_text.lower() == "ананас":
         rows = cur.execute(
             "SELECT role, message, timestamp FROM messages WHERE user_id=? ORDER BY timestamp",
@@ -354,7 +340,6 @@ async def handle(message: types.Message, state: FSMContext) -> None:
         await message.answer("Отправлено менеджеру")
         return
 
-    # Вызов OpenAI ChatGPT
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -367,7 +352,6 @@ async def handle(message: types.Message, state: FSMContext) -> None:
         logger.exception("OpenAI API error")
         reply = "Ошибка. Попробуйте позже."
 
-    # Отправка и сохранение ответа
     history.append({"role": "assistant", "content": reply})
     await state.update_data(chat_history=history)
     cur.execute(
@@ -378,10 +362,9 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     await asyncio.sleep(1)
     await message.answer(reply)
 
-    # Планируем follow-up после ответа
-    task30 = asyncio.create_task(schedule_followup_30(chat_id))
+    # Планируем follow-up после ответа (только 180-секундное напоминание)
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
-    followup_tasks[chat_id] = (task30, task180)
+    followup_tasks[chat_id] = (None, task180)
 
 # ---------------------------------------------------------------------------
 # Точка входа
