@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Telegram‑бот BeBrand: диалог + выгрузка Google Sheets."""
+"""Telegram‑бот BeBrand: диалог + выгрузка Google Sheets + follow-up reminders."""
 
 from __future__ import annotations
 
@@ -111,8 +111,8 @@ PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 # Системный промпт для ChatGPT
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
-'''
-Отвечай только на русском языке. 
+    '''
+    Отвечай только на русском языке. 
 
 Ответь как можно правдивее, используя предоставленный контекст выше.
 
@@ -192,7 +192,6 @@ db = init_db()
 # ---------------------------------------------------------------------------
 # Отправка email-уведомлений
 # ---------------------------------------------------------------------------
-
 def send_email_alert(
     subject: str, body: str, images: Sequence[bytes] | None = None
 ) -> None:
@@ -218,10 +217,43 @@ def send_email_alert(
         logger.error("Failed to send email: %s", e)
 
 # ---------------------------------------------------------------------------
+# Follow-up reminders management
+# ---------------------------------------------------------------------------
+# Хранит задачи напоминаний по chat_id
+followup_tasks: dict[int, tuple[asyncio.Task, asyncio.Task]] = {}
+
+async def schedule_followup_30(chat_id: int):
+    try:
+        await asyncio.sleep(30)
+        await bot.send_message(chat_id, "Проведем бесплатную экспертизу?")
+    except asyncio.CancelledError:
+        pass
+
+async def schedule_followup_180(chat_id: int):
+    try:
+        await asyncio.sleep(180)
+        await bot.send_message(
+            chat_id,
+            "Понимаю, мой ответ возможно вас не устроил. "
+            "Но на самом деле, чтобы ответить на ваши вопросы, "
+            "необходимо провести первичную диагностику, "
+            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию"
+        )
+    except asyncio.CancelledError:
+        pass
+
+# ---------------------------------------------------------------------------
 # Хэндлер команд и сообщений
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
+    # Отмена старых задач, если есть
+    chat_id = message.chat.id
+    if chat_id in followup_tasks:
+        for t in followup_tasks[chat_id]:
+            t.cancel()
+        del followup_tasks[chat_id]
+
     history = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -235,11 +267,22 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
     await state.update_data(chat_history=history)
     await message.answer(history[-1]["content"])
 
+    # Планируем follow-up после ответа
+    task30 = asyncio.create_task(schedule_followup_30(chat_id))
+    task180 = asyncio.create_task(schedule_followup_180(chat_id))
+    followup_tasks[chat_id] = (task30, task180)
 
 @dp.message()
 async def handle(message: types.Message, state: FSMContext) -> None:
+    chat_id = message.chat.id
     text = message.text or ""
     user_text = text.strip()
+
+    # Отменяем любые ранее запланированные напоминалки
+    if chat_id in followup_tasks:
+        for task in followup_tasks[chat_id]:
+            task.cancel()
+        del followup_tasks[chat_id]
 
     # Отправка данных из Google Sheets
     if user_text.lower() in {"отправь данные", "отправить данные"}:
@@ -311,6 +354,10 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     await asyncio.sleep(1)
     await message.answer(reply)
 
+    # Планируем follow-up после ответа
+    task30 = asyncio.create_task(schedule_followup_30(chat_id))
+    task180 = asyncio.create_task(schedule_followup_180(chat_id))
+    followup_tasks[chat_id] = (task30, task180)
 
 # ---------------------------------------------------------------------------
 # Точка входа
