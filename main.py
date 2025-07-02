@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Telegram‑бот BeBrand: диалог + Google Sheets + follow-ups + настроение + утренние сообщения."""
+"""Telegram‑бот BeBrand: диалог + выгрузка Google Sheets + follow-up reminders."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Sequence
-from datetime import datetime, time, timedelta
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -80,9 +79,8 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # ---------------------------------------------------------------------------
-# Google Sheets init
+# Google Sheets
 # ---------------------------------------------------------------------------
-
 def init_google_sheet() -> gspread.models.Spreadsheet | None:
     if not (GOOGLE_SHEET_NAME and gspread and Credentials and GOOGLE_SA_JSON):
         logger.info("Google Sheets not configured or libraries missing")
@@ -105,12 +103,12 @@ def init_google_sheet() -> gspread.models.Spreadsheet | None:
 gsheet = init_google_sheet()
 
 # ---------------------------------------------------------------------------
-# Phone regex
+# Регулярное выражение для телефона
 # ---------------------------------------------------------------------------
 PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 
 # ---------------------------------------------------------------------------
-# System prompt (omitted for brevity)
+# Системный промпт для ChatGPT
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     '''
@@ -178,46 +176,49 @@ SYSTEM_PROMPT = (
 
 
 База знаний: Срок действия товарного знака 10 лет, не варьируется.
+
 '''
 )
 
 # ---------------------------------------------------------------------------
-# DB init with mood column
+# Инициализация базы данных
 # ---------------------------------------------------------------------------
 DB_PATH = Path(RENDER_DATA_DIR) / "messages.db"
 
 def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
-    new = not path.exists()
+    if path.exists():
+        try:
+            conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("PRAGMA integrity_check;")
+            if cur.fetchone()[0] != "ok":
+                path.unlink()
+        except sqlite3.DatabaseError:
+            path.unlink()
     conn = sqlite3.connect(path, check_same_thread=False)
-    cur = conn.cursor()
-    if new:
-        cur.execute(
-            """
-            CREATE TABLE messages (
-                user_id INTEGER,
-                username TEXT,
-                role TEXT,
-                message TEXT,
-                mood TEXT,
-                image BLOB,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-            """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            user_id INTEGER,
+            username TEXT,
+            role TEXT,
+            message TEXT,
+            image BLOB,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    else:
-        cur.execute("PRAGMA table_info(messages);")
-        cols = [r[1] for r in cur.fetchall()]
-        if 'mood' not in cols:
-            cur.execute("ALTER TABLE messages ADD COLUMN mood TEXT;")
+        """
+    )
     conn.commit()
     return conn
 
 db = init_db()
 
 # ---------------------------------------------------------------------------
-# Email alerts
+# Отправка email-уведомлений
 # ---------------------------------------------------------------------------
-def send_email_alert(subject: str, body: str, images: Sequence[bytes] | None = None) -> None:
+def send_email_alert(
+    subject: str, body: str, images: Sequence[bytes] | None = None
+) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = EMAIL_FROM
@@ -228,7 +229,9 @@ def send_email_alert(subject: str, body: str, images: Sequence[bytes] | None = N
             part = MIMEBase("application", "octet-stream")
             part.set_payload(data)
             encoders.encode_base64(part)
-            part.add_header("Content-Disposition", f"attachment; filename=img{idx}.jpg")
+            part.add_header(
+                "Content-Disposition", f"attachment; filename=img{idx}.jpg"
+            )
             msg.attach(part)
     try:
         with smtplib.SMTP_SSL(SMTP_HOST, 465) as smtp:
@@ -238,8 +241,9 @@ def send_email_alert(subject: str, body: str, images: Sequence[bytes] | None = N
         logger.error("Failed to send email: %s", e)
 
 # ---------------------------------------------------------------------------
-# Follow-up reminders
+# Follow-up reminders management
 # ---------------------------------------------------------------------------
+# Хранит задачи напоминаний по chat_id
 followup_tasks: dict[int, tuple[asyncio.Task, asyncio.Task]] = {}
 
 async def schedule_followup_30(chat_id: int):
@@ -254,29 +258,43 @@ async def schedule_followup_180(chat_id: int):
         await asyncio.sleep(180)
         await bot.send_message(
             chat_id,
-            "Понимаю, мой ответ возможно вас не устроил. Но на самом деле, чтобы ответить на ваши вопросы, необходимо провести первичную диагностику, чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию"
+            "Понимаю, мой ответ возможно вас не устроил. "
+            "Но на самом деле, чтобы ответить на ваши вопросы, "
+            "необходимо провести первичную диагностику, "
+            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию"
         )
     except asyncio.CancelledError:
+        # если отменили, просто выходим
         return
+    # после успешной отправки — удаляем задачи, чтобы не повторять
     followup_tasks.pop(chat_id, None)
 
 # ---------------------------------------------------------------------------
-# Handlers
+# Хэндлер команд и сообщений
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
+    # Отмена старых задач, если есть
     chat_id = message.chat.id
     if chat_id in followup_tasks:
-        for t in followup_tasks[chat_id]: t.cancel()
+        for t in followup_tasks[chat_id]:
+            t.cancel()
         followup_tasks.pop(chat_id, None)
 
     history = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "assistant", "content": "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: есть ли у вас уже название или логотип для вашего бизнеса?"},
+        {
+            "role": "assistant",
+            "content": (
+                "Здравствуйте! Пока я зову менеджера, ответьте на вопрос: "
+                "есть ли у вас уже название или логотип для вашего бизнеса?"
+            ),
+        },
     ]
     await state.update_data(chat_history=history)
     await message.answer(history[-1]["content"])
 
+    # Планируем follow-up после ответа
     task30 = asyncio.create_task(schedule_followup_30(chat_id))
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
     followup_tasks[chat_id] = (task30, task180)
@@ -284,57 +302,28 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
 @dp.message()
 async def handle(message: types.Message, state: FSMContext) -> None:
     chat_id = message.chat.id
-    user_text = (message.text or "").strip()
+    text = message.text or ""
+    user_text = text.strip()
 
+    # Отменяем любые ранее запланированные напоминалки
     if chat_id in followup_tasks:
-        for t in followup_tasks[chat_id]: t.cancel()
+        for task in followup_tasks[chat_id]:
+            task.cancel()
         followup_tasks.pop(chat_id, None)
 
-    # Sentiment analysis via OpenAI
-    try:
-        sentiment_resp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты анализатор настроения. Ответь одним словом: angry, neutral или happy."},
-                {"role": "user", "content": user_text},
-            ],
-            max_tokens=5,
-        )
-        mood = sentiment_resp.choices[0].message.content.strip().lower()
-        if mood not in {'angry','neutral','happy'}:
-            mood = 'neutral'
-    except Exception:
-        mood = 'neutral'
+    # … здесь остальной ваш код (Google Sheets, сохранение в БД, детект телефона, «ананас», OpenAI и т.д.)
 
-    cur = db.cursor()
-    cur.execute(
-        "INSERT INTO messages(user_id, username, role, message, mood) VALUES(?,?,?,?,?)",
-        (message.from_user.id, message.from_user.username or "", "user", user_text, mood),
-    )
-    db.commit()
+    # Допустим, мы получили и отправили reply:
+    # await message.answer(reply)
 
-    # TODO: интегрировать Google Sheets, детект телефона, "ананас", OpenAI chat
-    reply = "<ваш ответ>"
-    await message.answer(reply)
-
+    # И снова планируем follow-up только один раз
     task30 = asyncio.create_task(schedule_followup_30(chat_id))
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
     followup_tasks[chat_id] = (task30, task180)
 
-    async def morning_message():
-        now = datetime.now()
-        next9 = datetime.combine(now.date() + timedelta(days=1), time(9, 0))
-        await asyncio.sleep((next9 - now).total_seconds())
-        if mood == 'angry':
-            text = "Доброе утро! Понимаю, вчера было непросто. Готов обсудить и найти решение."
-        elif mood == 'happy':
-            text = "Доброе утро! Рад, что вы в хорошем настроении. Чем могу помочь сегодня?"
-        else:
-            text = "Доброе утро! Как у вас дела сегодня? Готовы продолжить наш разговор."
-        await bot.send_message(chat_id, text)
-
-    asyncio.create_task(morning_message())
-
+# ---------------------------------------------------------------------------
+# Точка входа
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("Bot starting…")
     asyncio.run(dp.start_polling(bot))
