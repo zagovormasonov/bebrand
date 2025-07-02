@@ -24,12 +24,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from openai import OpenAI
 
-# Sentiment analysis
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-sia = SentimentIntensityAnalyzer()
-
 # ---------------------------------------------------------------------------
-# Optional Google dependencies
+# Опциональные зависимости (Google)
 # ---------------------------------------------------------------------------
 try:
     import gspread
@@ -39,7 +35,7 @@ except ImportError:
     Credentials = None  # type: ignore
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Конфигурация
 # ---------------------------------------------------------------------------
 API_TOKEN = os.getenv("API_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -67,7 +63,7 @@ if _missing:
 ALERT_CHAT_ID = int(ALERT_CHAT_ID_RAW)
 
 # ---------------------------------------------------------------------------
-# Logging
+# Логирование
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -76,7 +72,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Clients
+# Клиенты
 # ---------------------------------------------------------------------------
 client = OpenAI(api_key=OPENAI_API_KEY)
 bot = Bot(token=API_TOKEN)
@@ -118,7 +114,7 @@ PHONE_REGEX = re.compile(r"(\+?\d[\d\s\-]{7,}\d)")
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     '''
-Отвечай только на русском языке. 
+    Отвечай только на русском языке. 
 
 Говори о себе только в мужском роде.
 
@@ -182,7 +178,6 @@ SYSTEM_PROMPT = (
 
 
 База знаний: Срок действия товарного знака 10 лет, не варьируется.
-
 '''
 )
 
@@ -291,22 +286,26 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     chat_id = message.chat.id
     user_text = (message.text or "").strip()
 
-    # cancel previous reminders
     if chat_id in followup_tasks:
         for t in followup_tasks[chat_id]: t.cancel()
         followup_tasks.pop(chat_id, None)
 
-    # Sentiment analysis
-    scores = sia.polarity_scores(user_text)
-    c = scores['compound']
-    if c <= -0.5:
-        mood = 'angry'
-    elif c >= 0.5:
-        mood = 'happy'
-    else:
+    # Sentiment analysis via OpenAI
+    try:
+        sentiment_resp = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ты анализатор настроения. Ответь одним словом: angry, neutral или happy."},
+                {"role": "user", "content": user_text},
+            ],
+            max_tokens=5,
+        )
+        mood = sentiment_resp.choices[0].message.content.strip().lower()
+        if mood not in {'angry','neutral','happy'}:
+            mood = 'neutral'
+    except Exception:
         mood = 'neutral'
 
-    # Save message with mood
     cur = db.cursor()
     cur.execute(
         "INSERT INTO messages(user_id, username, role, message, mood) VALUES(?,?,?,?,?)",
@@ -314,17 +313,14 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     )
     db.commit()
 
-    # TODO: Google Sheets, phone detect, "ананас", OpenAI chat GPT...
-    # Here you generate `reply` via OpenAI or other logic, then:
+    # TODO: интегрировать Google Sheets, детект телефона, "ананас", OpenAI chat
     reply = "<ваш ответ>"
     await message.answer(reply)
 
-    # Followups
     task30 = asyncio.create_task(schedule_followup_30(chat_id))
     task180 = asyncio.create_task(schedule_followup_180(chat_id))
     followup_tasks[chat_id] = (task30, task180)
 
-    # Schedule morning message
     async def morning_message():
         now = datetime.now()
         next9 = datetime.combine(now.date() + timedelta(days=1), time(9, 0))
@@ -334,14 +330,11 @@ async def handle(message: types.Message, state: FSMContext) -> None:
         elif mood == 'happy':
             text = "Доброе утро! Рад, что вы в хорошем настроении. Чем могу помочь сегодня?"
         else:
-            text = "Доброе утро! Как у вас дела сегодня? Готов продолжить наш разговор."
+            text = "Доброе утро! Как у вас дела сегодня? Готовы продолжить наш разговор."
         await bot.send_message(chat_id, text)
 
     asyncio.create_task(morning_message())
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("Bot starting…")
     asyncio.run(dp.start_polling(bot))
