@@ -349,7 +349,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=history,
             max_tokens=500,
             temperature=0.9,
