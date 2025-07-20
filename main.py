@@ -184,18 +184,23 @@ async def schedule_followup_180(chat_id: int):
         await asyncio.sleep(180)
         await bot.send_message(
             chat_id,
-            "Понимаю, мой ответ возможно вас не устроил. "
-            "Но на самом деле, чтобы ответить на ваши вопросы, "
-            "необходимо провести первичную диагностику, "
-            "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию "
-             "Согласитесь, вы же не хотите, чтобы вам врали?)"
+            (
+                "Понимаю, мой ответ возможно вас не устроил. "
+                "Но на самом деле, чтобы ответить на ваши вопросы, "
+                "необходимо провести первичную диагностику, "
+                "чтобы не вводить вас в заблуждение и выдать вам точную, правдивую информацию "
+                "Согласитесь, вы же не хотите, чтобы вам врали?)"
+            )
         )
     except asyncio.CancelledError:
         pass
 
+# ---------------------------------------------------------------------------
+# Системный prompt
+# ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     '''
-не используй форматирование текста(жирный шрифт и тд)
+       не используй форматирование текста(жирный шрифт и тд)
 
 Отвечай только на русском языке. 
 
@@ -271,26 +276,38 @@ SYSTEM_PROMPT = (
 База знаний: Срок действия товарного знака 10 лет, не варьируется.
 
 В процессе общения, если ты определил, что вид деятельности пользователя один из перечисленных ниже, скажи ему, что мы регистрировали соответствующие товарные знаки:
-Общепит: Макдоналдс, BurgerKing
-Услуги: BigBro, IntimIzh
-Одежда: СбежавшийНосок, ХитрыеТрусы, ЕбоМайка
-
-
-'''
+Кафе, рестораны, бары: Позимь, Кипарис, Еда навсегда, Аями, Сегодня можно, Мясная лавка Кромвеля, Перепечкин, Вите надо выпить, Pizzapp, Дом родного хлеба, Дело в рисе
+Развлечения: Ижевский зоопарк, Mango Boom, Эктоника
+Танцы, фитнес: Realfit, Non-stop dance, Next pro, Accent dance
+Развлекательные заведения: Клуб дыма, Дымные истории
+Магазины: Индючонок, Кормамаркет, Колба, БИГБРОВЕЙП, Метелица, Почерк Фаворита, Новый Смокинг, Сырная душа, Молочная душа, Мистер Флешкин, Питьсбург, Свиридов, THECOMOD, Оптима
+Парикмахерские, барбершопы: Best Hunter, Лезвие, Monarch
+Мебель: Редмисон, Аякс, Homelikeroom, Ник-мебель, Модериум, Экспертмебель, 18 стульев
+Медицина: Ориклиник, Ардениум, Отличный доктор, Апекс, Safe Smile, Линзамаркет
+Обслуживание автомобилей: Автохирург, Агосавто, Навигатор, Шинка Дископрав
+Строительство: Новый уровень, Flathouse, Стройспецпро, Ижстройснаб, TORUDA
+СМИ: Ижлайф
+Типография: Никнейм
+Продвижение, коучинг: Premiumexpertoff, Дарья Коробей
+Одежда/обувь: Надонадо, Всемью
+    '''
 )
 
 # ---------------------------------------------------------------------------
 # Хэндлеры Aiogram
 # ---------------------------------------------------------------------------
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
     chat_id = message.chat.id
+    # Отменяем старые задачи, если были
     if chat_id in followup_tasks:
         for t in followup_tasks[chat_id]:
             if t:
                 t.cancel()
         del followup_tasks[chat_id]
 
+    # Инициализируем историю и счётчик сообщений
     history = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "assistant", "content": (
@@ -298,12 +315,8 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
             "есть ли у вас уже название или логотип для вашего бизнеса?"
         )},
     ]
-    await state.update_data(chat_history=history)
+    await state.update_data(chat_history=history, msg_count=0)
     await message.answer(history[-1]["content"])
-
-    task30 = asyncio.create_task(schedule_followup_30(chat_id))
-    task180 = asyncio.create_task(schedule_followup_180(chat_id))
-    followup_tasks[chat_id] = (task30, task180)
 
 @dp.message()
 async def handle(message: types.Message, state: FSMContext) -> None:
@@ -311,12 +324,25 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     text = message.text or ""
     user_text = text.strip()
 
+    # Отменяем старые задачи (если пользователь ответил до напоминаний)
     if chat_id in followup_tasks:
         for task in followup_tasks[chat_id]:
             if task:
                 task.cancel()
         del followup_tasks[chat_id]
 
+    # Получаем и увеличиваем счётчик сообщений
+    data = await state.get_data()
+    msg_count = data.get("msg_count", 0) + 1
+    await state.update_data(msg_count=msg_count)
+
+    # Если 4-е сообщение — запускаем оба таймера
+    if msg_count == 4:
+        task30 = asyncio.create_task(schedule_followup_30(chat_id))
+        task180 = asyncio.create_task(schedule_followup_180(chat_id))
+        followup_tasks[chat_id] = (task30, task180)
+
+    # Обработка команды выгрузки данных
     if user_text.lower() in {"отправь данные", "отправить данные"}:
         if not gsheet:
             await message.answer("Google Sheets не настроена.")
@@ -330,9 +356,10 @@ async def handle(message: types.Message, state: FSMContext) -> None:
                     await message.answer(chunk)
         return
 
-    data = await state.get_data()
+    # Сохраняем в историю и БД
     history = data.get("chat_history") or [{"role": "system", "content": SYSTEM_PROMPT}]
     history.append({"role": "user", "content": user_text})
+    await state.update_data(chat_history=history)
 
     cur = db.cursor()
     cur.execute(
@@ -341,6 +368,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     )
     db.commit()
 
+    # Поиск телефона и отправка алерта
     match = PHONE_REGEX.search(user_text)
     if match:
         phone = match.group(1)
@@ -348,6 +376,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
         await bot.send_message(ALERT_CHAT_ID, alert)
         send_email_alert("Телефон", alert)
 
+    # Особое слово "ананас"
     if user_text.lower() == "ананас":
         rows = cur.execute(
             "SELECT role, message, timestamp FROM messages WHERE user_id=? ORDER BY timestamp",
@@ -358,6 +387,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
         await message.answer("Отправлено менеджеру")
         return
 
+    # Вызов OpenAI и отправка ответа
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -372,16 +402,21 @@ async def handle(message: types.Message, state: FSMContext) -> None:
 
     history.append({"role": "assistant", "content": reply})
     await state.update_data(chat_history=history)
+
     cur.execute(
         "INSERT INTO messages(user_id, username, role, message, image, timestamp) VALUES(?,?,?,?,NULL, CURRENT_TIMESTAMP)",
         (message.from_user.id, message.from_user.username or "", "assistant", reply),
     )
     db.commit()
+
+    # Отправляем ответ
     await asyncio.sleep(1)
     await message.answer(reply)
 
-    task180 = asyncio.create_task(schedule_followup_180(chat_id))
-    followup_tasks[chat_id] = (None, task180)
+    # Для последующих сообщений запускаем только второй таймер
+    if msg_count > 4:
+        task180 = asyncio.create_task(schedule_followup_180(chat_id))
+        followup_tasks[chat_id] = (None, task180)
 
 # ---------------------------------------------------------------------------
 # Точка входа
