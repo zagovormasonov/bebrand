@@ -101,7 +101,6 @@ def init_google_sheet() -> gspread.models.Spreadsheet | None:
         logger.error("Google Sheets init failed: %s", e)
         return None
 
-
 gsheet = init_google_sheet()
 
 # ---------------------------------------------------------------------------
@@ -174,6 +173,7 @@ def send_email_alert(
 # Follow-up reminders management
 # ---------------------------------------------------------------------------
 followup_tasks: dict[int, tuple[asyncio.Task | None, asyncio.Task | None]] = {}
+contact_tasks: dict[int, asyncio.Task] = {}
 
 async def schedule_followup_30(chat_id: int):
     try:
@@ -198,12 +198,20 @@ async def schedule_followup_180(chat_id: int):
     except asyncio.CancelledError:
         pass
 
+async def schedule_contact_reminder(chat_id: int):
+    try:
+        # Три дня
+        await asyncio.sleep(3 * 24 * 3600)
+        await bot.send_message(chat_id, "Оставьте ваши контакты для связи, пожалуйста.")
+    except asyncio.CancelledError:
+        pass
+
 # ---------------------------------------------------------------------------
 # Системный prompt
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     '''
-не используй форматирование текста(жирный шрифт и тд)
+    не используй форматирование текста(жирный шрифт и тд)
 
 Отвечай только на русском языке. 
 
@@ -305,12 +313,15 @@ SYSTEM_PROMPT = (
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext) -> None:
     chat_id = message.chat.id
-    # Отменяем старые задачи, если были
+    # Отменяем старые задачи
     if chat_id in followup_tasks:
         for t in followup_tasks[chat_id]:
             if t:
                 t.cancel()
         del followup_tasks[chat_id]
+    if chat_id in contact_tasks:
+        contact_tasks[chat_id].cancel()
+        del contact_tasks[chat_id]
 
     # Инициализируем историю и счётчик сообщений
     history = [
@@ -328,16 +339,18 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     chat_id = message.chat.id
     user_text = (message.text or "").strip()
 
-    # Увеличиваем счётчик сообщений
+    # Увеличиваем счётчик
     data = await state.get_data()
     msg_count = data.get("msg_count", 0) + 1
     await state.update_data(msg_count=msg_count)
 
-    # При 4-м сообщении запускаем оба таймера
+    # На 4-м сообщении запускаем followup и contact reminders
     if msg_count == 4:
         task30 = asyncio.create_task(schedule_followup_30(chat_id))
         task180 = asyncio.create_task(schedule_followup_180(chat_id))
         followup_tasks[chat_id] = (task30, task180)
+        # Запланировать запрос контактов через 3 дня
+        contact_tasks[chat_id] = asyncio.create_task(schedule_contact_reminder(chat_id))
 
     # Обработка команды выгрузки
     if user_text.lower() in {"отправь данные", "отправить данные"}:
@@ -353,11 +366,10 @@ async def handle(message: types.Message, state: FSMContext) -> None:
                     await message.answer(chunk)
         return
 
-    # Сохраняем в историю и БД
+    # Сохраняем сообщения
     history = data.get("chat_history") or [{"role": "system", "content": SYSTEM_PROMPT}]
     history.append({"role": "user", "content": user_text})
     await state.update_data(chat_history=history)
-
     cur = db.cursor()
     cur.execute(
         "INSERT INTO messages(user_id, username, role, message) VALUES(?,?,?,?)",
@@ -365,15 +377,19 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     )
     db.commit()
 
-    # Поиск телефона и отправка алерта
+    # Если телефон найден, отменяем напоминание о контактах
     match = PHONE_REGEX.search(user_text)
     if match:
         phone = match.group(1)
         alert = f"Пользователь оставил тел.: {phone}"
         await bot.send_message(ALERT_CHAT_ID, alert)
         send_email_alert("Телефон", alert)
+        # отменить напоминание через 3 дня
+        if chat_id in contact_tasks:
+            contact_tasks[chat_id].cancel()
+            del contact_tasks[chat_id]
 
-    # Особое слово "ананас"
+    # Секретное слово "ананас"
     if user_text.lower() == "ананас":
         rows = cur.execute(
             "SELECT role, message, timestamp FROM messages WHERE user_id=? ORDER BY timestamp",
@@ -384,7 +400,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
         await message.answer("Отправлено менеджеру")
         return
 
-    # Вызов OpenAI и отправка ответа
+    # Ответ ассистента
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
@@ -399,19 +415,17 @@ async def handle(message: types.Message, state: FSMContext) -> None:
 
     history.append({"role": "assistant", "content": reply})
     await state.update_data(chat_history=history)
-
     cur.execute(
         "INSERT INTO messages(user_id, username, role, message, image, timestamp) VALUES(?,?,?,?,NULL, CURRENT_TIMESTAMP)",
         (message.from_user.id, message.from_user.username or "", "assistant", reply),
     )
     db.commit()
 
-    # Отправляем ответ
     await asyncio.sleep(1)
     await message.answer(reply)
 
-    # Для сообщений после 4-го запускаем только второй таймер
-    if msg_count > 3:
+    # Для последующих сообщений запускаем только второй followup
+    if msg_count > 4:
         task180 = asyncio.create_task(schedule_followup_180(chat_id))
         followup_tasks[chat_id] = (None, task180)
 
