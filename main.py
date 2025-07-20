@@ -409,7 +409,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     await message.answer(reply)
 
     # Для сообщений после 4-го запускаем только второй таймер
-    if msg_count > 4:
+    if msg_count > 3:
         task180 = asyncio.create_task(schedule_followup_180(chat_id))
         followup_tasks[chat_id] = (None, task180)
 
