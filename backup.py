@@ -333,7 +333,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     msg_count = data.get("msg_count", 0) + 1
     await state.update_data(msg_count=msg_count)
 
-    if msg_count == 4:
+    if msg_count == 3:
         task30 = asyncio.create_task(schedule_followup_30(chat_id))
         task180 = asyncio.create_task(schedule_followup_180(chat_id))
         followup_tasks[chat_id] = (task30, task180)

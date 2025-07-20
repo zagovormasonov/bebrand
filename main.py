@@ -201,7 +201,7 @@ async def schedule_followup_180(chat_id: int):
 async def schedule_contact_reminder(chat_id: int):
     try:
         # Три дня
-        await asyncio.sleep(3 * 24 * 3600)
+        await asyncio.sleep(5 * 60)
         await bot.send_message(chat_id, "Оставьте ваши контакты для связи, пожалуйста.")
     except asyncio.CancelledError:
         pass
