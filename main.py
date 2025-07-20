@@ -81,6 +81,7 @@ dp = Dispatcher(storage=storage)
 # ---------------------------------------------------------------------------
 # Google Sheets
 # ---------------------------------------------------------------------------
+
 def init_google_sheet() -> gspread.models.Spreadsheet | None:
     if not (GOOGLE_SHEET_NAME and gspread and Credentials and GOOGLE_SA_JSON):
         logger.info("Google Sheets not configured or libraries missing")
@@ -99,6 +100,7 @@ def init_google_sheet() -> gspread.models.Spreadsheet | None:
     except Exception as e:
         logger.error("Google Sheets init failed: %s", e)
         return None
+
 
 gsheet = init_google_sheet()
 
@@ -143,6 +145,7 @@ db = init_db()
 # ---------------------------------------------------------------------------
 # Отправка email-уведомлений
 # ---------------------------------------------------------------------------
+
 def send_email_alert(
     subject: str, body: str, images: Sequence[bytes] | None = None
 ) -> None:
@@ -170,7 +173,7 @@ def send_email_alert(
 # ---------------------------------------------------------------------------
 # Follow-up reminders management
 # ---------------------------------------------------------------------------
-followup_tasks: dict[int, tuple[asyncio.Task | None, asyncio.Task]] = {}
+followup_tasks: dict[int, tuple[asyncio.Task | None, asyncio.Task | None]] = {}
 
 async def schedule_followup_30(chat_id: int):
     try:
@@ -200,7 +203,7 @@ async def schedule_followup_180(chat_id: int):
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
     '''
-       не используй форматирование текста(жирный шрифт и тд)
+    не используй форматирование текста(жирный шрифт и тд)
 
 Отвечай только на русском языке. 
 
@@ -289,8 +292,8 @@ SYSTEM_PROMPT = (
 СМИ: Ижлайф
 Типография: Никнейм
 Продвижение, коучинг: Premiumexpertoff, Дарья Коробей
-Одежда/обувь: Надонадо, Всемью
-    '''
+Одежда/обувь: Надонадо, Всемью    
+'''
 )
 
 # ---------------------------------------------------------------------------
@@ -321,28 +324,20 @@ async def cmd_start(message: types.Message, state: FSMContext) -> None:
 @dp.message()
 async def handle(message: types.Message, state: FSMContext) -> None:
     chat_id = message.chat.id
-    text = message.text or ""
-    user_text = text.strip()
+    user_text = (message.text or "").strip()
 
-    # Отменяем старые задачи (если пользователь ответил до напоминаний)
-    if chat_id in followup_tasks:
-        for task in followup_tasks[chat_id]:
-            if task:
-                task.cancel()
-        del followup_tasks[chat_id]
-
-    # Получаем и увеличиваем счётчик сообщений
+    # Увеличиваем счётчик сообщений
     data = await state.get_data()
     msg_count = data.get("msg_count", 0) + 1
     await state.update_data(msg_count=msg_count)
 
-    # Если 4-е сообщение — запускаем оба таймера
+    # При 4-м сообщении запускаем оба таймера
     if msg_count == 4:
         task30 = asyncio.create_task(schedule_followup_30(chat_id))
         task180 = asyncio.create_task(schedule_followup_180(chat_id))
         followup_tasks[chat_id] = (task30, task180)
 
-    # Обработка команды выгрузки данных
+    # Обработка команды выгрузки
     if user_text.lower() in {"отправь данные", "отправить данные"}:
         if not gsheet:
             await message.answer("Google Sheets не настроена.")
@@ -413,7 +408,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
     await asyncio.sleep(1)
     await message.answer(reply)
 
-    # Для последующих сообщений запускаем только второй таймер
+    # Для сообщений после 4-го запускаем только второй таймер
     if msg_count > 4:
         task180 = asyncio.create_task(schedule_followup_180(chat_id))
         followup_tasks[chat_id] = (None, task180)
