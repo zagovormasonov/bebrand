@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""BeBrand Telegram бот: минимальная версия (Telegram → OpenAI), с поддержкой .env и прокси."""
+"""Минимальный BeBrand-бот: Telegram → OpenAI. Поддержка .env и прокси через переменные окружения."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import asyncio
 import logging
 import os
 
-import httpx
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -18,7 +17,7 @@ from openai import OpenAI
 # ---------------------------------------------------------------------------
 # .env и конфиг
 # ---------------------------------------------------------------------------
-load_dotenv()  # подтянет переменные из .env рядом с файлом
+load_dotenv()  # подтянет переменные из .env
 
 API_TOKEN = os.getenv("API_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -35,20 +34,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# OpenAI клиент (учитываем прокси, если указан)
+# OpenAI клиент (прокси берутся автоматически из HTTPS_PROXY/HTTP_PROXY)
 # ---------------------------------------------------------------------------
-proxy = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")  # напр. http://user:pass@IP:8888 или socks5h://...
-http_client = httpx.Client(proxies=proxy, timeout=30) if proxy else None
-oa_client = OpenAI(api_key=OPENAI_API_KEY, http_client=http_client)
+oa_client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ---------------------------------------------------------------------------
-# Telegram (aiogram)
+# Telegram (aiogram v3)
 # ---------------------------------------------------------------------------
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ---------------------------------------------------------------------------
-# Системный промпт (как в твоём проекте)
+# Системный промпт (можно сократить под себя)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = '''
    не используй форматирование текста(жирный шрифт и тд)
@@ -202,7 +199,7 @@ async def handle(message: types.Message, state: FSMContext) -> None:
 
     history.append({"role": "assistant", "content": reply})
     await state.update_data(chat_history=history)
-    await asyncio.sleep(0)  # точка переключения
+    await asyncio.sleep(0)
     await message.answer(reply)
 
 # ---------------------------------------------------------------------------
