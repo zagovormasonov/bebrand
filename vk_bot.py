@@ -10,6 +10,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 from openai import OpenAI
 from vkbottle.bot import Bot, Message, rules, BotLabeler
+from vkbottle import BaseMiddleware
 
 # ---------------------------------------------------------------------------
 # .env и конфиг
@@ -217,9 +218,18 @@ async def handle(message: Message):
     await message.answer(reply)
 
 # ---------------------------------------------------------------------------
+# Middleware для логирования всех событий
+# ---------------------------------------------------------------------------
+class EventLoggerMiddleware(BaseMiddleware[Message]):
+    async def pre(self):
+        logger.info(f"Event received: {self.event}")
+        return True
+
+# ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("VK bot starting…")
     bot.labeler.load(labeler)
+    bot.labeler.message_view.register_middleware(EventLoggerMiddleware)
     bot.run_forever()
