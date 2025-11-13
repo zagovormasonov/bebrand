@@ -178,6 +178,7 @@ def _ensure_history(user_id: int) -> list[dict]:
 @labeler.message(rules.PayloadRule({"command": "start"}))
 @labeler.message(text=["начать", "start"])
 async def cmd_start(message: Message):
+    logger.info(f"Start command from {message.from_id}")
     user_id = message.from_id
     history = _ensure_history(user_id)
     await message.answer(history[-1]["content"])
@@ -187,7 +188,9 @@ async def cmd_start(message: Message):
 # ---------------------------------------------------------------------------
 @labeler.message()  # все входящие текстовые сообщения
 async def handle(message: Message):
+    logger.info(f"Received message from {message.from_id}: {message.text}")
     if not (message.text or "").strip():
+        logger.debug("Empty message text, skipping")
         return
 
     user_id = message.from_id
@@ -209,6 +212,7 @@ async def handle(message: Message):
 
     history.append({"role": "assistant", "content": reply})
     H[user_id] = history
+    logger.info(f"Sending reply to {user_id}: {reply[:50]}...")
     await asyncio.sleep(0)
     await message.answer(reply)
 
