@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections import defaultdict
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -45,6 +47,31 @@ labeler.vbml_ignore_case = True  # не чувствителен к регист
 
 # Память диалогов в RAM: user_id -> list[messages]
 H: dict[int, list[dict[str, str]]] = defaultdict(list)
+
+# Отслеживание времени последнего сообщения от клиента: user_id -> timestamp
+last_message_time: dict[int, float] = {}
+
+# Отслеживание отправленных напоминаний: user_id -> bool
+reminder_sent: dict[int, bool] = {}
+
+# Текст напоминания через 3 дня
+REMINDER_MESSAGE = """Здравствуйте!) Мы с вами общались недавно. Хочу еще раз вам предложить экспертизу вашего обозначения!)
+
+В результате экспертизы что вы получите: 
+
+1) Экспертиза в среднем стоит от 5 до 15т руб (например, в Роспатенте). Мы для вас в рамках этого разговора проведем ее бесплатно! 
+
+2) Вы получите на руки документ, выписку из базы Роспатента.
+
+3) По результатам экспертизы мы проведем для вас консультацию, на которой подробно расскажем все о перспективах вашего товарного знака и об интеллектуальной собственности в целом. 
+
+4) По результатам экспертизы и консультации вы получите полное понимание, как вы сможете защитить ваше предприятие от посягательств конкурентов и судебных претензий(ст.1515 ГК РФ) 
+
+5) Получите полное понимание как вы сможете получить право эксклюзивного использования вашего имени в ваших сферах деятельности на территории РФ (ст.1483 ГК РФ)
+
+6) Расскажем как доминировать с помощью вашего имени на просторах интернета в соц. сетях, с помощью сайта, увеличить поток клиентов и увеличить вашу прибыль
+
+7) Как можно с помощью товарного знака легально оптимизировать налоги."""
 
 SYSTEM_PROMPT = '''
 не используй форматирование текста(жирный шрифт и тд)
@@ -181,6 +208,9 @@ def _ensure_history(user_id: int) -> list[dict]:
 async def cmd_start(message: Message):
     logger.info(f"Start command from {message.from_id}")
     user_id = message.from_id
+    # Обновляем время последнего сообщения от клиента и сбрасываем флаг напоминания
+    last_message_time[user_id] = time.time()
+    reminder_sent[user_id] = False
     history = _ensure_history(user_id)
     await message.answer(history[-1]["content"])
 
@@ -195,6 +225,10 @@ async def handle(message: Message):
         return
 
     user_id = message.from_id
+    # Обновляем время последнего сообщения от клиента и сбрасываем флаг напоминания
+    last_message_time[user_id] = time.time()
+    reminder_sent[user_id] = False
+    
     history = _ensure_history(user_id)
     history.append({"role": "user", "content": message.text.strip()})
 
@@ -218,11 +252,54 @@ async def handle(message: Message):
     await message.answer(reply)
 
 # ---------------------------------------------------------------------------
-# Middleware для логирования всех событий
+# Фоновая задача для отправки напоминаний через 3 дня
 # ---------------------------------------------------------------------------
+async def check_and_send_reminders():
+    """Проверяет и отправляет напоминания клиентам, которые молчали 3 дня"""
+    while True:
+        try:
+            await asyncio.sleep(6 * 60 * 60)  # Проверяем каждые 6 часов
+            current_time = time.time()
+            three_days_seconds = 3 * 24 * 60 * 60  # 3 дня в секундах
+            
+            for user_id, last_time in list(last_message_time.items()):
+                # Проверяем, прошло ли 3 дня с момента последнего сообщения
+                if current_time - last_time >= three_days_seconds:
+                    # Проверяем, не было ли уже отправлено напоминание
+                    if not reminder_sent.get(user_id, False):
+                        try:
+                            # Отправляем напоминание через API
+                            await bot.api.messages.send(
+                                user_id=user_id,
+                                message=REMINDER_MESSAGE,
+                                random_id=int(time.time() * 1000) % 2147483647
+                            )
+                            reminder_sent[user_id] = True
+                            logger.info(f"Sent reminder to user {user_id} after 3 days of silence")
+                        except Exception as e:
+                            logger.error(f"Failed to send reminder to user {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Error in reminder check task: {e}")
+
+# ---------------------------------------------------------------------------
+# Middleware для логирования всех событий и запуска фоновой задачи
+# ---------------------------------------------------------------------------
+_reminder_task_started = False
+
 class EventLoggerMiddleware(BaseMiddleware[Message]):
     async def pre(self):
+        global _reminder_task_started
         logger.info(f"Event received: {self.event}")
+        
+        # Запускаем фоновую задачу при первом сообщении, если она еще не запущена
+        if not _reminder_task_started:
+            try:
+                asyncio.create_task(check_and_send_reminders())
+                _reminder_task_started = True
+                logger.info("Reminder check task started via middleware")
+            except Exception as e:
+                logger.error(f"Failed to start reminder task: {e}")
+        
         return True
 
 # ---------------------------------------------------------------------------
@@ -232,4 +309,8 @@ if __name__ == "__main__":
     logger.info("VK bot starting…")
     bot.labeler.load(labeler)
     bot.labeler.message_view.register_middleware(EventLoggerMiddleware)
+    
+    # Фоновая задача для напоминаний будет запущена автоматически через middleware
+    # при получении первого сообщения
+    
     bot.run_forever()
